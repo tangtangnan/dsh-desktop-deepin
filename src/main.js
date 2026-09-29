@@ -9,7 +9,6 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { mkdir, symlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,10 +45,20 @@ import {
 const HOST = '127.0.0.1'
 const here = dirname(fileURLToPath(import.meta.url))
 
-// The port the official shell uses by default, kept separate from the Web
-// app's own 3080. A port that is already taken falls back to a free one, so a
-// stale kernel holding 19387 does not stop this launch.
-const DEFAULT_PORT = 19387
+// Ports are always chosen by the OS.
+//
+// The official shell fixes 19387, and this shell copied that — which turned out
+// to be actively harmful here. When another dsh instance already held 19387,
+// this shell moved to a free port *and then probed 19387 anyway*, so it was
+// checking a stranger's kernel: that kernel gates its web surface behind its
+// own per-launch token, this shell had a different token, every probe came
+// back 401, and startup failed with "the kernel did not start responding in
+// time" while the real kernel was up and healthy on the port it had been given.
+//
+// Asking the OS for an unused port removes the collision entirely: nothing else
+// can hold the port this launch is about to use, so the probe can only ever
+// reach the kernel this shell started.
+
 
 /**
  * The shortest time the loading page stays up after the kernel is ready.
@@ -514,26 +523,10 @@ function attachKernelOutput(process_) {
  * @returns {Promise<number>}
  */
 async function preferredPort(host) {
-  if (await isPortFree(host, DEFAULT_PORT)) return DEFAULT_PORT
-  console.log(`port ${DEFAULT_PORT} is taken, using a free port`)
+  // Deliberately always ephemeral — see the comment above this function. A
+  // fixed port can be held by another dsh instance, and probing a stranger's
+  // kernel is what produced the startup timeout.
   return findFreePort(host)
-}
-
-/**
- * Whether a TCP port on the loopback interface can be bound.
- *
- * @param {string} host
- * @param {number} port
- * @returns {Promise<boolean>}
- */
-function isPortFree(host, port) {
-  return new Promise((resolve) => {
-    const server = createServer()
-    server.once('error', () => resolve(false))
-    server.listen(port, host, () => {
-      server.close(() => resolve(true))
-    })
-  })
 }
 
 /**
