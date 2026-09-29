@@ -135,5 +135,6 @@ say ""
 say "✅ 完成：$DEB_FILE"
 say "   体积：$SIZE"
 say ""
-say "验证内容："
-dpkg-deb --contents "$DEB_FILE" | head -20
+# 注意：不要在这里接 `| head` —— 关掉管道会让 dpkg-deb 收到 SIGPIPE，
+# 把本已成功的打包流程判成 exit 2（CI 因此误报失败）。
+
