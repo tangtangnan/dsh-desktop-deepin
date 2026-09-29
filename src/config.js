@@ -87,6 +87,7 @@ function mergeSection(base, override) {
   return out
 }
 
+/** @type {typeof DEFAULTS | null} */
 let loaded = null
 
 /**
@@ -104,7 +105,7 @@ export function getConfig() {
       console.warn(`config.json could not be parsed, using defaults: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  loaded = mergeSection(DEFAULTS, user)
+  loaded = /** @type {typeof DEFAULTS} */ (mergeSection(DEFAULTS, user))
   return loaded
 }
 
