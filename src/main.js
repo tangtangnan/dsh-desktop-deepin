@@ -410,6 +410,39 @@ async function toggleSafeMode() {
 }
 
 /**
+ * Sends the current stage to the loading page, retrying until the page's script
+ * is actually running.
+ *
+ * The page is a `data:` URL whose inline script defines `__dshStage`. An
+ * `executeJavaScript` fired before that script runs finds the function
+ * missing, and a naive `window.__dshStage && ...` guard then drops the update
+ * silently — which is exactly why the stage text never advanced past
+ * "preparing". The retry makes delivery independent of that race.
+ *
+ * @param {string} stage
+ * @param {number} retryDelayMs
+ * @param {number} [attempt]
+ * @returns {void}
+ */
+function pushStage(stage, retryDelayMs, attempt = 0) {
+  const window_ = mainWindow
+  if (window_ === null || window_.isDestroyed()) return
+  void window_.webContents
+    .executeJavaScript(
+      `(function(){if(typeof window.__dshStage!=='function')return false;` +
+        `window.__dshStage(${JSON.stringify(stage)}, ${Number(retryDelayMs)});return true})()`,
+      true,
+    )
+    .then((applied) => {
+      if (applied === true || attempt >= 40) return
+      setTimeout(() => pushStage(stage, retryDelayMs, attempt + 1), 50)
+    })
+    .catch(() => {
+      if (attempt < 40) setTimeout(() => pushStage(stage, retryDelayMs, attempt + 1), 50)
+    })
+}
+
+/**
  * Streams a kernel's output into the loading page's log pane.
  *
  * Batched on a short interval rather than pushed per line: the kernel writes
@@ -433,14 +466,25 @@ function attachKernelOutput(process_) {
     pending = []
     const window_ = mainWindow
     if (window_ === null || window_.isDestroyed()) return
+    // Guarded the same way `pushStage` is: `__dshLog` only exists once the
+    // loading page's own script has run, and an unguarded call would throw
+    // into the catch and lose the batch. Unclaimed lines are simply left in
+    // `pending` to go out with the next flush while the page is coming up.
     window_.webContents
       .executeJavaScript(
-        // Each line is JSON-encoded, so a quote or backslash in kernel output
-        // cannot break out of the injected script.
-        batch.map((line) => `window.__dshLog && window.__dshLog(${JSON.stringify(line)})`).join(';'),
+        `(function(){if(typeof window.__dshLog!=='function')return false;` +
+          // Each line is JSON-encoded, so a quote or backslash in kernel
+          // output cannot break out of the injected script.
+          batch.map((line) => `window.__dshLog(${JSON.stringify(line)})`).join(';') +
+          `;return true})()`,
         true,
       )
-      .catch(() => undefined)
+      .then((applied) => {
+        if (applied === false) pending = batch.concat(pending)
+      })
+      .catch(() => {
+        pending = batch.concat(pending)
+      })
   }
 
   const detach = process_.onOutput((line) => {
@@ -603,12 +647,7 @@ async function startKernel() {
       // Advance the loading page in place rather than reloading it: a reload
       // restarts the elapsed counter and makes the earlier stages unreachable,
       // which is what made the whole progress display invisible.
-      void mainWindow.webContents
-        .executeJavaScript(
-          `window.__dshStage && window.__dshStage(${JSON.stringify(stage)}, ${Number(state.retryDelayMs ?? 0)})`,
-          true,
-        )
-        .catch(() => undefined)
+      pushStage(stage, state.retryDelayMs ?? 0)
     },
     /** @returns {Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
     launchSpec: async () => {
@@ -865,6 +904,7 @@ function createWindow() {
    * @param {string | null} nextToken
    * @returns {Promise<void>}
    */
+  // eslint-disable-next-line jsdoc/require-param
   const setKernel = async (nextOrigin, nextToken) => {
     origin = nextOrigin
     token = nextToken
