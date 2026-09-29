@@ -128,7 +128,7 @@ export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0, started
   return asDataUrl(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
     <title>DeepSeek Harness Desktop</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
     <style>${STYLE}</style></head>
     <body><main>
       <div class="brand">DEEPSEEK HARNESS</div>
