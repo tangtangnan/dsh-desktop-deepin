@@ -27,13 +27,13 @@ describe('validateBindings', () => {
     const { accepted, rejected } = validateBindings({ 'window.explode': 'CmdOrCtrl+E' })
     assert.deepEqual(accepted, {})
     assert.equal(rejected.length, 1)
-    assert.match(rejected[0], /unknown command/)
+    assert.match(String(rejected[0]), /unknown command/)
   })
 
   it('rejects a reserved accelerator', () => {
     const { accepted, rejected } = validateBindings({ 'window.reload': 'CmdOrCtrl+Q' })
     assert.deepEqual(accepted, {})
-    assert.match(rejected[0], /reserved/)
+    assert.match(String(rejected[0]), /reserved/)
   })
 
   it('rejects reserved accelerators case-insensitively', () => {
@@ -64,7 +64,7 @@ describe('validateBindings', () => {
   it('keeps every reserved accelerator out of the defaults', () => {
     for (const binding of Object.values(DEFAULT_BINDINGS)) {
       assert.equal(
-        RESERVED_ACCELERATORS.includes(binding),
+        RESERVED_ACCELERATORS.includes(/** @type {string} */ (binding)),
         false,
         `${binding} should not be reserved`,
       )
@@ -122,7 +122,7 @@ describe('dispatchShortcut', () => {
       mode: 'dom',
     })
     assert.equal(seen.length, 1)
-    assert.match(seen[0], /window\.reload/)
+    assert.match(String(seen[0]), /window\.reload/)
   })
 
   it('does nothing when the page is gone', async () => {
