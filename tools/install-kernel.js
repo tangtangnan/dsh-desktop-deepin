@@ -290,7 +290,8 @@ function areShippedPluginsInstalled(plugins) {
   }
   return names.every((name) => {
     const entry = installed.packages?.[`node_modules/${name}`]
-    return entry !== undefined && entry.version === plugins[name].version
+    const plugin = plugins[name]
+    return entry !== undefined && plugin !== undefined && entry.version === plugin.version
   })
 }
 
