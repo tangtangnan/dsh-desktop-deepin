@@ -95,6 +95,10 @@ export class ShellTray {
   #onToggleLaunchAtLogin = () => {}
   /** @type {boolean} */
   #launchAtLogin = false
+  /** @type {boolean} */
+  #safeMode = false
+  /** @type {() => void} */
+  #onToggleSafeMode = () => {}
   /** @type {string | null} */
   #balance = null
   /** @type {boolean} */
@@ -110,11 +114,13 @@ export class ShellTray {
    * @param {() => void} [options.onRestart] - restart the kernel
    * @param {() => void} [options.onCheckUpdates] - check for updates
    * @param {() => void} [options.onToggleLaunchAtLogin] - toggle autostart
+   * @param {() => void} [options.onToggleSafeMode] - toggle Safe Mode
+   * @param {boolean} [options.safeMode] - whether Safe Mode is on
    * @param {boolean} [options.launchAtLogin] - whether autostart is on
    * @param {string | null} [options.balance] - balance string to show, or null
    * @returns {void}
    */
-  attach({ iconPath, window, onShow, onQuit, onState, onRestart, onCheckUpdates, onToggleLaunchAtLogin, launchAtLogin = false, balance = null }) {
+  attach({ iconPath, window, onShow, onQuit, onState, onRestart, onCheckUpdates, onToggleLaunchAtLogin, onToggleSafeMode, launchAtLogin = false, safeMode = false, balance = null }) {
     if (this.#tray !== null) return
     if (!existsSync(iconPath)) {
       throw new Error(`tray icon missing: ${iconPath}`)
@@ -126,6 +132,8 @@ export class ShellTray {
     this.#onCheckUpdates = onCheckUpdates ?? (() => {})
     this.#onToggleLaunchAtLogin = onToggleLaunchAtLogin ?? (() => {})
     this.#launchAtLogin = launchAtLogin
+    this.#safeMode = safeMode
+    if (typeof onToggleSafeMode === 'function') this.#onToggleSafeMode = onToggleSafeMode
     this.#balance = balance
     if (typeof onState === 'function') onState(this.#kernelState ?? { phase: 'starting', stage: 'launching' })
 
@@ -234,6 +242,18 @@ export class ShellTray {
     this.#refreshMenu()
   }
 
+  /**
+   * Reflects the Safe Mode flag in the menu, so the checked state and the
+   * status line agree with what the kernel was actually started with.
+   *
+   * @param {boolean} enabled
+   * @returns {void}
+   */
+  setSafeMode(enabled) {
+    this.#safeMode = enabled
+    this.#refreshMenu()
+  }
+
   /** @returns {void} */
   #refreshMenu() {
     if (this.#tray === null) return
@@ -282,8 +302,14 @@ export class ShellTray {
         checked: this.#launchAtLogin,
         click: () => this.#onToggleLaunchAtLogin(),
       },
+      {
+        label: this.#safeMode ? '安全模式：开（第三方插件已停用）' : '安全模式：关',
+        type: 'checkbox',
+        checked: this.#safeMode,
+        click: () => this.#onToggleSafeMode(),
+      },
       { type: 'separator' },
-      { label: this.#statusLabel(), enabled: false },
+      { label: this.#safeMode ? `${this.#statusLabel()}（安全模式）` : this.#statusLabel(), enabled: false },
       {
         label: this.#kernelState?.phase === 'crashed' ? '启动内核' : '重启内核',
         enabled: canRestart,
