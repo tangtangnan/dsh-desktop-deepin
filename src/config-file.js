@@ -138,7 +138,7 @@ export async function withFileLock(
  *
  * @param {string} lockPath
  * @param {() => number} now
- * @param {(path: string) => Promise<{ mtimeMs: number }>} [stat]
+ * @param {(path: string) => Promise<{ mtimeMs: number }>} stat
  * @returns {Promise<boolean>}
  */
 async function isStale(lockPath, now, stat) {
