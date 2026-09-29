@@ -397,6 +397,54 @@ async function toggleSafeMode() {
 }
 
 /**
+ * Streams a kernel's output into the loading page's log pane.
+ *
+ * Batched on a short interval rather than pushed per line: the kernel writes
+ * one line per plugin and per MCP server, and an `executeJavaScript` call per
+ * line would cost more than the kernel itself. The pane only exists while the
+ * loading page is showing; once the real UI takes over, the injections become
+ * no-ops and the buffer is dropped.
+ *
+ * @param {import('./kernel-process.js').KernelProcess} process_
+ * @returns {() => void} detach
+ */
+function attachKernelOutput(process_) {
+  /** @type {string[]} */
+  let pending = []
+  let timer = /** @type {NodeJS.Timeout | null} */ (null)
+
+  const flush = () => {
+    timer = null
+    if (pending.length === 0) return
+    const batch = pending
+    pending = []
+    const window_ = mainWindow
+    if (window_ === null || window_.isDestroyed()) return
+    window_.webContents
+      .executeJavaScript(
+        // Each line is JSON-encoded, so a quote or backslash in kernel output
+        // cannot break out of the injected script.
+        batch.map((line) => `window.__dshLog && window.__dshLog(${JSON.stringify(line)})`).join(';'),
+        true,
+      )
+      .catch(() => undefined)
+  }
+
+  const detach = process_.onOutput((line) => {
+    pending.push(line)
+    // Cap the queue so a kernel that floods output cannot grow this without
+    // bound while the page is slow to accept it.
+    if (pending.length > 300) pending = pending.slice(-300)
+    if (timer === null) timer = setTimeout(flush, 120)
+  })
+
+  return () => {
+    detach()
+    if (timer !== null) clearTimeout(timer)
+  }
+}
+
+/**
  * The port to launch on: the official default when it is free, otherwise any
  * free port.
  *
@@ -563,6 +611,12 @@ async function startKernel() {
 
   const process_ = await supervisor.start()
   kernel = supervisor
+
+  // Stream the kernel's own output to the loading page, so a slow start shows
+  // what it is doing instead of an opaque spinner. Batched: the kernel emits
+  // hundreds of lines (one per plugin), and one `executeJavaScript` per line
+  // would cost more than the kernel does.
+  attachKernelOutput(process_)
 
   // A supervisor that has run out of restarts is the one case the user has to
   // be told about: the window cannot recover by waiting. Record it and show
