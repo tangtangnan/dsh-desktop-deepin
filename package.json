@@ -29,14 +29,13 @@
     "typecheck": "tsc --noEmit",
     "kernel:install": "node tools/install-kernel.js && node tools/install-node.js && node tools/prune-kernel.js",
     "scan:leaks": "node tools/scan-leaks.js",
-    "prepack:app": "npm run test && npm run scan:leaks && npm run kernel:install",
+    "prepack:app": "npm run test && npm run scan:leaks",
     "pack": "npm run prepack:app && electron-builder --dir",
-    "dist": "npm run prepack:app && electron-builder --publish never",
+    "dist": "npm run dist:linux",
     "dist:win": "npm run prepack:app && electron-builder --win --publish never",
     "dist:mac": "npm run prepack:app && electron-builder --mac --publish never",
-    "dist:linux": "npm run prepack:app && electron-builder --linux --publish never",
-    "dist:linux:deb": "npm run prepack:app && electron-builder --linux deb --publish never",
-    "dist:linux:appimage": "npm run prepack:app && electron-builder --linux AppImage --publish never",
+    "dist:linux": "npm run prepack:app && bash tools/build-deb.sh",
+    "dist:linux:deb": "npm run dist:linux",
     "doctor": "node tools/doctor.js",
     "doctor:install": "node tools/doctor.js --install"
   },
@@ -59,6 +58,9 @@
       "assets/icon.png",
       "package.json",
       "config.json",
+      "start-shell.sh",
+      "tools/bootstrap.sh",
+      "tools/doctor.js",
       "LICENSE",
       "NOTICE"
     ],
@@ -109,6 +111,7 @@
       "maintainer": "DeepSeek Harness Desktop Community <noreply@example.com>"
     },
     "deb": {
+      "afterInstall": "scripts/postinst.sh",
       "depends": [
         "libgtk-3-0",
         "libnotify4",
