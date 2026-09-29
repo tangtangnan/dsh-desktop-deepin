@@ -34,6 +34,14 @@ const STYLE = `
     white-space: pre-wrap; word-break: break-word; margin: 0 0 16px; }
   .label { font-size: 12px; opacity: .55; margin: 18px 0 6px; }
   .elapsed { font-size: 12px; opacity: .45; margin-top: 10px; font-variant-numeric: tabular-nums; }
+  .log { margin-top: 22px; width: min(760px, 82vw); height: 220px; overflow-y: auto;
+    text-align: left; font: 11.5px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.18);
+    border-radius: 8px; padding: 10px 12px; opacity: .8; white-space: pre-wrap;
+    word-break: break-all; scrollbar-width: thin; }
+  .log:empty { display: none; }
+  .log .l { opacity: .85; }
+  .log .l.err { color: #e06c75; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   button { padding: 7px 14px; border-radius: 7px; border: 1px solid rgba(255,255,255,.18);
     background: rgba(255,255,255,.08); color: inherit; font: inherit; cursor: pointer; }
@@ -111,6 +119,10 @@ export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0, started
     `else if(stage==='waiting-for-ready')setText('正在等待内核就绪…');` +
     `else if(stage==='retrying')setText('内核退出，'+Math.ceil((retryMs||0)/1000)+' 秒后重试…');` +
     `else setText('正在启动内核…');elapsed()};` +
+    `window.__dshLog=function(line,isErr){var box=document.getElementById('log');if(!box)return;` +
+    `var d=document.createElement('div');d.className='l'+(isErr?' err':'');d.textContent=line;` +
+    `box.appendChild(d);while(box.childNodes.length>400)box.removeChild(box.firstChild);` +
+    `box.scrollTop=box.scrollHeight};` +
     `elapsed();setInterval(elapsed,1000)})()<\/script>`
 
   return asDataUrl(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -122,6 +134,7 @@ export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0, started
       <div class="brand">DEEPSEEK HARNESS</div>
       <div class="stage"><span class="dot"></span><span id="stage-text">${escapeHtml(text)}</span></div>
       <div class="elapsed" id="elapsed"></div>
+      <div class="log" id="log"></div>
       ${script}
     </main></body></html>`)
 }
