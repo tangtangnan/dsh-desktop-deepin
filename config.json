@@ -15,7 +15,7 @@
   },
   "kernel": {
     "_comment": "内核段：决定 dsh 内核怎么起、DSH_HOME 落在哪。",
-    "homeSubdir": "/home/wangke/.dsh",
+    "homeSubdir": "~/.dsh",
     "_comment_homeSubdir": "DSH_HOME 的位置。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用（如系统默认 /home/wangke/.dsh）。注意：绝对路径意味着本壳与任何使用同一目录的 dsh 实例共用内核 home——同一台机器若还有另一个 dsh web/桌面端在跑，两条飞书 bot 长连接会互相抢占，入站消息会丢。只在本机只有这一个 dsh 时这么设。",
     "profile": "web",
     "_comment_profile": "dsh 启动 profile，默认 web（带 Web UI 的桌面模式）。",
@@ -36,8 +36,8 @@
     "_comment_baseDelayMs": "首次重试延迟（毫秒）。之后每次翻倍，直到撞到 maxDelayMs 封顶。",
     "maxDelayMs": 30000,
     "_comment_maxDelayMs": "重试延迟上限（毫秒）。翻倍到此即封顶，不再增长。",
-    "readinessTimeoutMs": 90000,
-    "_comment_readinessTimeoutMs": "单次启动等待内核就绪（打出 dsh web: 行）的超时。超时算这次启动失败、进入重试。"
+    "readinessTimeoutMs": 240000,
+    "_comment_readinessTimeoutMs": "单次启动等待内核就绪（打出 dsh web: 行）的超时。超时算这次启动失败、进入重试。实测本机内核启动耗时在 45~120+ 秒间波动（11 个插件 + 4 个 MCP 服务器串行初始化），原 90 秒不够，故放宽到 240 秒。"
   },
   "renderer": {
     "_comment": "渲染段：Electron 渲染进程（也就是那个 Web 页面）崩溃时的自愈上限。",
@@ -69,5 +69,6 @@
     "_comment_repo": "GitHub 仓库名。改这两项目标就换成你自己的发布源。",
     "autoDownload": false,
     "_comment_autoDownload": "检测到更新是否自动下载。false 表示只提示、不自动拉。"
-  }
+  },
+  "_comment_homeSubdir": "DSH_HOME 的位置。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用（如系统默认 /home/wangke/.dsh）。注意：绝对路径意味着本壳与任何使用同一目录的 dsh 实例共用内核 home——同一台机器若还有另一个 dsh web/桌面端在跑，两条飞书 bot 长连接会互相抢占，入站消息会丢。只在本机只有这一个 dsh 时这么设。"
 }
