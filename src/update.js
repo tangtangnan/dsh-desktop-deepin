@@ -47,8 +47,11 @@ export async function checkForUpdatesAndNotify() {
   // without touching code.
   const updates = getConfig().updates
   autoUpdater.autoDownload = Boolean(updates.autoDownload)
+  // `provider` comes from config.json, so it is a plain string; electron-updater
+  // types it as a union. The cast is the boundary where configuration meets
+  // the library's contract.
   autoUpdater.setFeedURL({
-    provider: updates.provider,
+    provider: /** @type {import('builder-util-runtime').PublishProvider} */ (updates.provider),
     owner: updates.owner,
     repo: updates.repo,
   })
