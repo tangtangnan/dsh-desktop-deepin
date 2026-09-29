@@ -35,7 +35,7 @@ import { getConfig } from './config.js'
  */
 
 export class KernelSupervisor {
-  /** @type {() => {nodePath: string, args: string[], env: Record<string,string>, cwd: string}} */
+  /** @type {() => Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
   #launchSpec
   /** @type {(state: KernelState) => void} */
   #onState
@@ -55,14 +55,17 @@ export class KernelSupervisor {
 
   /**
    * @param {object} options
-   * @param {() => {nodePath: string, args: string[], env: Record<string,string>, cwd: string}} options.launchSpec -
-   *   returns a fresh launch description; called again on every restart
+   * @param {() => Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} options.launchSpec -
+   *   returns a fresh launch description; called again on every restart. It is
+   *   awaited (line below), so a synchronous implementation would also work —
+   *   but the caller in `main.js` chooses the port with `await`, and the
+   *   annotation has to say what is actually awaited.
    * @param {(state: KernelState) => void} [options.onState] - notified on every
    *   phase/stage change, which is what the tray and the loading page read
    * @param {import('./restart-policy.js').RestartPolicyConfig} [options.policy] -
    *   restart bounds; defaults to config.json's `supervisor` section
    */
-  constructor({ launchSpec, onState = () => undefined, policy } = {}) {
+  constructor({ launchSpec, onState = () => undefined, policy } = /** @type {any} */ ({})) {
     this.#launchSpec = launchSpec
     this.#onState = onState
     const svc = getConfig().supervisor
@@ -171,7 +174,11 @@ export class KernelSupervisor {
     if (current !== null) await current.stop()
   }
 
-  /** Marks the current launch as ready, resetting the backoff. */
+  /**
+   * Marks the current launch as ready, resetting the backoff.
+   *
+   * @param {string} url
+   */
   markReady(url) {
     this.#restartDelay = this.#policy.baseDelayMs
     this.#onState({ phase: 'ready', url })
