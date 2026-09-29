@@ -539,9 +539,15 @@ async function startKernel() {
       if (mainWindow === null || mainWindow.isDestroyed()) return
       const stage = state.phase === 'starting' ? (state.stage ?? 'launching') : undefined
       if (stage === undefined) return
-      void mainWindow.loadURL(
-        loadingPageHtml({ stage, retryDelayMs: state.retryDelayMs ?? 0, startedAt: startupBeganAt }),
-      )
+      // Advance the loading page in place rather than reloading it: a reload
+      // restarts the elapsed counter and makes the earlier stages unreachable,
+      // which is what made the whole progress display invisible.
+      void mainWindow.webContents
+        .executeJavaScript(
+          `window.__dshStage && window.__dshStage(${JSON.stringify(stage)}, ${Number(state.retryDelayMs ?? 0)})`,
+          true,
+        )
+        .catch(() => undefined)
     },
     /** @returns {Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
     launchSpec: async () => {
