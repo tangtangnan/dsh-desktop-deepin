@@ -87,20 +87,31 @@ export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0, started
           ? `内核退出，${Math.ceil(retryDelayMs / 1000)} 秒后重试…`
           : '正在启动内核…'
 
-  // A counter that ticks while the page is up. Electron can take seconds to
-  // become ready on a cold start, and a spinner with no sense of elapsed time
-  // is indistinguishable from a hang — which is exactly the complaint this
-  // page exists to answer. The script is inline and dependency-free because
-  // the page is a `data:` URL with `default-src 'none'`.
+  // The elapsed counter, and the hook the shell uses to advance this page
+  // through the stages *without reloading it*.
+  //
+  // Reloading is what made the stages invisible: each `loadURL` replaced the
+  // document, so the counter restarted and the early stages were gone before
+  // they could be read. `window.__dshStage(stage, retryDelayMs)` updates the
+  // text in place, so one document lives for the whole startup and the
+  // counter never resets.
+  //
+  // The script is inline and dependency-free because the page is a `data:` URL
+  // under `default-src 'none'`.
   const since = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : 0
-  const ticker =
-    stage === 'preparing'
-      ? ''
-      : `<script>(function(){var t0=${since || 'Date.now()'};var el=document.getElementById('elapsed');` +
-        `if(!el)return;function pad(n){return n<10?'0'+n:''+n}` +
-        `function tick(){var s=Math.floor((Date.now()-t0)/1000);` +
-        `el.textContent=s<60?('已等待 '+s+' 秒'):('已等待 '+Math.floor(s/60)+' 分 '+pad(s%60)+' 秒')}` +
-        `tick();setInterval(tick,1000)})()<\/script>`
+  const script =
+    `<script>(function(){var t0=${since || 'Date.now()'};` +
+    `var el=document.getElementById('elapsed');var st=document.getElementById('stage-text');` +
+    `function pad(n){return n<10?'0'+n:''+n}` +
+    `function elapsed(){if(!el)return;var s=Math.floor((Date.now()-t0)/1000);` +
+    `el.textContent=s<60?('已等待 '+s+' 秒'):('已等待 '+Math.floor(s/60)+' 分 '+pad(s%60)+' 秒')}` +
+    `function setText(t){if(st)st.textContent=t}` +
+    `window.__dshStage=function(stage,retryMs){` +
+    `if(stage==='preparing')setText('正在准备启动…');` +
+    `else if(stage==='waiting-for-ready')setText('正在等待内核就绪…');` +
+    `else if(stage==='retrying')setText('内核退出，'+Math.ceil((retryMs||0)/1000)+' 秒后重试…');` +
+    `else setText('正在启动内核…');elapsed()};` +
+    `elapsed();setInterval(elapsed,1000)})()<\/script>`
 
   return asDataUrl(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
     <title>DeepSeek Harness Desktop</title>
@@ -109,9 +120,9 @@ export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0, started
     <style>${STYLE}</style></head>
     <body><main>
       <div class="brand">DEEPSEEK HARNESS</div>
-      <div class="stage"><span class="dot"></span><span>${escapeHtml(text)}</span></div>
+      <div class="stage"><span class="dot"></span><span id="stage-text">${escapeHtml(text)}</span></div>
       <div class="elapsed" id="elapsed"></div>
-      ${ticker}
+      ${script}
     </main></body></html>`)
 }
 
