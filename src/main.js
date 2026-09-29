@@ -79,6 +79,17 @@ let kernel = null
  * @type {boolean}
  */
 let systemKernelMode = false
+/**
+ * When this launch began waiting for a kernel, in epoch millis.
+ *
+ * Passed into every loading page so the elapsed counter keeps counting across
+ * the page swaps that happen as the kernel moves through its stages — a
+ * counter that restarted on each swap would understate how long the user has
+ * actually been waiting.
+ *
+ * @type {number}
+ */
+let startupBeganAt = 0
 /** @type {BrowserWindow | null} */
 let mainWindow = null
 /** @type {ShellTray | null} */
@@ -528,7 +539,9 @@ async function startKernel() {
       if (mainWindow === null || mainWindow.isDestroyed()) return
       const stage = state.phase === 'starting' ? (state.stage ?? 'launching') : undefined
       if (stage === undefined) return
-      void mainWindow.loadURL(loadingPageHtml({ stage, retryDelayMs: state.retryDelayMs ?? 0 }))
+      void mainWindow.loadURL(
+        loadingPageHtml({ stage, retryDelayMs: state.retryDelayMs ?? 0, startedAt: startupBeganAt }),
+      )
     },
     /** @returns {Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
     launchSpec: async () => {
@@ -629,13 +642,12 @@ function tokenised(url, token) {
  * times within a rolling window.
  *
  * @param {BrowserWindow} window
- * @param {string} origin
- * @param {string | null} token
+ * @param {() => {origin: string | null, token: string | null}} endpoint
  * @param {number[]} times - epoch millis of past recoveries
  * @param {(next: number[]) => void} setTimes
  * @returns {Promise<void>}
  */
-async function recoverRenderer(window, origin, token, times, setTimes) {
+async function recoverRenderer(window, endpoint, times, setTimes) {
   const now = Date.now()
   const recent = times.filter((time) => time >= now - RENDERER_RECOVERY_WINDOW_MS)
   if (recent.length >= MAX_RENDERER_RECOVERIES) {
@@ -646,6 +658,11 @@ async function recoverRenderer(window, origin, token, times, setTimes) {
   const next = [...recent, now]
   setTimes(next)
   if (window.isDestroyed()) return
+  // Read the endpoint at recovery time, not at handler-install time: the
+  // window exists before the kernel does, so an origin captured when the
+  // handler was attached would be null forever.
+  const { origin, token } = endpoint()
+  if (origin === null) return
   try {
     await window.loadURL(tokenised(`${origin}/`, token))
   } catch (error) {
@@ -750,12 +767,45 @@ function persistWindowState(window) {
 }
 
 /**
- * @param {string} origin
- * @param {string | null} token - the kernel's per-launch web token, when the
- *   surface is gated; null when the kernel serves without one.
- * @returns {BrowserWindow}
+ * The window is created *before* the kernel is up, so it can show the loading
+ * page while the kernel starts — waiting for the kernel first leaves the user
+ * staring at nothing, which on a slow first launch is most of the wait.
+ *
+ * `origin` and `token` are therefore not known yet. They live in a mutable
+ * closure the kernel-start path fills in via the returned handle, and every
+ * navigation decision reads that closure rather than a captured value. Until
+ * the origin is known, no external navigation is allowed at all — the loading
+ * page is a `data:` URL and needs no origin.
+ *
+ * @returns {{window: BrowserWindow, setKernel: (origin: string, token: string | null) => void}}
  */
-function createWindow(origin, token) {
+function createWindow() {
+  /** @type {string | null} */
+  let origin = null
+  /** @type {string | null} */
+  let token = null
+
+  /**
+   * Records the kernel endpoint once it is known, and points the window at it.
+   *
+   * @param {string} nextOrigin
+   * @param {string | null} nextToken
+   * @returns {void}
+   */
+  const setKernel = (nextOrigin, nextToken) => {
+    origin = nextOrigin
+    token = nextToken
+    if (window.isDestroyed()) return
+    void window.loadURL(tokenised(`${origin}/`, token))
+  }
+
+  /**
+   * Whether a URL belongs to the kernel that is actually serving.
+   *
+   * @param {string} url
+   * @returns {boolean}
+   */
+  const isKernelUrl = (url) => origin !== null && isAllowedNavigation(url, origin)
   // Geometry the user last left behind, validated against the displays that
   // are connected now — a monitor unplugged since the last launch would
   // otherwise leave the window somewhere it cannot be seen.
@@ -826,14 +876,16 @@ function createWindow(origin, token) {
 
   webContents.on('will-navigate', (event, url) => {
     if (isShellPage(url)) return
-    if (!isAllowedNavigation(url, origin)) {
+    if (!isKernelUrl(url)) {
       event.preventDefault()
-      if (classifyWindowOpen(url, origin) === 'external') void shell.openExternal(url)
+      if (origin !== null && classifyWindowOpen(url, origin) === 'external') {
+        void shell.openExternal(url)
+      }
     }
   })
 
   webContents.setWindowOpenHandler(({ url }) => {
-    const action = classifyWindowOpen(url, origin)
+    const action = origin === null ? 'deny' : classifyWindowOpen(url, origin)
     if (action === 'external') void shell.openExternal(url)
     // Never `allow`: a new BrowserWindow created this way would not inherit the policy
     // applied above, so kernel URLs are navigated in place instead.
@@ -853,14 +905,14 @@ function createWindow(origin, token) {
   let rendererRecoveries = []
   webContents.on('render-process-gone', (_event, details) => {
     console.error(`renderer gone: ${details.reason}`)
-    void recoverRenderer(window, origin, token, rendererRecoveries, (next) => {
+    void recoverRenderer(window, () => ({ origin, token }), rendererRecoveries, (next) => {
       rendererRecoveries = next
     })
   })
   webContents.on('did-fail-load', (_event, errorCode, description, validatedURL, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 || validatedURL.startsWith('data:')) return
     console.error(`load failed (${errorCode}): ${description}`)
-    void recoverRenderer(window, origin, token, rendererRecoveries, (next) => {
+    void recoverRenderer(window, () => ({ origin, token }), rendererRecoveries, (next) => {
       rendererRecoveries = next
     })
   })
@@ -891,8 +943,10 @@ function createWindow(origin, token) {
     mainWindow = null
   })
 
-  void window.loadURL(tokenised(`${origin}/`, token))
-  return window
+  // The loading page is shown immediately; `setKernel` swaps in the kernel
+  // once it is ready.
+  void window.loadURL(loadingPageHtml({ stage: 'preparing', startedAt: startupBeganAt }))
+  return { window, setKernel }
 }
 
 /**
@@ -943,7 +997,8 @@ async function restartKernel() {
   if (supervisor === null) return
 
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
-    void mainWindow.loadURL(loadingPageHtml({ stage: 'launching' }))
+    startupBeganAt = Date.now()
+    void mainWindow.loadURL(loadingPageHtml({ stage: 'launching', startedAt: startupBeganAt }))
   }
 
   try {
@@ -1048,9 +1103,22 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(async () => {
+    startupBeganAt = Date.now()
     try {
+      // Show the window first, then start the kernel. The kernel takes seconds
+      // to become ready, and making the user stare at nothing for that whole
+      // time is a worse experience than a visible loading page that reports
+      // what is happening. The window is shown as soon as it can paint.
+      const window_ = createWindow()
+      mainWindow = window_.window
+      window_.window.show()
+
+      // The loading page is already on screen; bring the kernel up and hand
+      // its endpoint to the window. Progress during startup reaches the page
+      // through the supervisor's `onState` callback, which swaps the loading
+      // page's stage text as the kernel moves through launch → waiting.
       const { origin, token } = await startKernel()
-      mainWindow = createWindow(origin, token)
+      window_.setKernel(origin, token)
 
       // The IPC channel from the locked-down preload. The renderer can only
       // call `shell.notify`; everything else in the kernel web UI has no
