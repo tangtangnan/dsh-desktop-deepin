@@ -19,6 +19,7 @@
  * @typedef {'restart-kernel'
  *   | 'check-updates'
  *   | 'toggle-launch-at-login'
+ *   | 'toggle-safe-mode'
  *   | 'show-about'
  *   | 'quit'
  *   | 'hide-window'} DesktopAction
@@ -38,6 +39,7 @@ export const DESKTOP_ACTIONS = Object.freeze({
   'toggle-launch-at-login': { confirm: false },
   'show-about': { confirm: false },
   'hide-window': { confirm: false },
+  'toggle-safe-mode': { confirm: false },
   quit: { confirm: true },
 })
 
@@ -75,6 +77,7 @@ export function needsConfirmation(action) {
  * @property {number} [retryDelayMs]
  * @property {boolean} busy
  * @property {boolean} launchAtLogin
+ * @property {boolean} safeMode
  */
 
 /**
@@ -87,15 +90,21 @@ export function needsConfirmation(action) {
  * @param {{phase: string, stage?: string, attempts?: number, retryDelayMs?: number} | null} [options.kernelState]
  * @param {boolean} [options.busy]
  * @param {boolean} [options.launchAtLogin]
+ * @param {boolean} [options.safeMode]
  * @returns {DesktopState}
  */
-export function toDesktopState({ kernelState = null, busy = false, launchAtLogin = false } = {}) {
+export function toDesktopState({
+  kernelState = null,
+  busy = false,
+  launchAtLogin = false,
+  safeMode = false,
+} = {}) {
   const phase =
     kernelState?.phase === 'ready' || kernelState?.phase === 'crashed'
       ? kernelState.phase
       : 'starting'
   /** @type {DesktopState} */
-  const state = { phase, busy, launchAtLogin }
+  const state = { phase, busy, launchAtLogin, safeMode }
   const stage = kernelState?.stage
   if (stage === 'launching' || stage === 'waiting-for-ready' || stage === 'retrying') {
     state.stage = stage
