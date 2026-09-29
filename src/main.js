@@ -14,7 +14,7 @@ import { mkdir, symlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron'
-import { KernelProcess, findFreePort } from './kernel-process.js'
+import { findFreePort } from './kernel-process.js'
 import { KernelSupervisor } from './kernel-supervisor.js'
 import { errorPageHtml, loadingPageHtml } from './loading-page.js'
 import { getConfig } from './config.js'
@@ -58,7 +58,16 @@ const cfgRenderer = getConfig().renderer
 const MAX_RENDERER_RECOVERIES = cfgRenderer.maxRecoveries
 const RENDERER_RECOVERY_WINDOW_MS = cfgRenderer.recoveryWindowMs
 
-/** @type {KernelProcess | null} */
+/**
+ * The kernel supervisor — not the kernel process.
+ *
+ * Getting this wrong is what broke the tray's "restart kernel" item: the
+ * supervisor owns `restart()` and `markReady()`, while the process owns
+ * `isRunning()`, `webToken()` and `args`. The annotation below used to say
+ * `KernelProcess`, and `restartKernel` acted on that wrong belief.
+ *
+ * @type {KernelSupervisor | null}
+ */
 let kernel = null
 /** @type {BrowserWindow | null} */
 let mainWindow = null
@@ -908,31 +917,58 @@ async function shutdown() {
  * @returns {Promise<void>}
  */
 async function restartKernel() {
-  if (kernel === null) return
+  // `kernel` is the *supervisor*, not the process. The previous version of this
+  // function assigned the process returned by `restart()` back into `kernel`,
+  // so the next restart called `restart()` on a KernelProcess — which has no
+  // such method — and the failure was swallowed by the catch below, leaving the
+  // shell apparently doing nothing.
+  const supervisor = kernel
+  if (supervisor === null) return
+
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     void mainWindow.loadURL(loadingPageHtml({ stage: 'launching' }))
   }
+
   try {
-    const next = await kernel.restart()
-    kernel = next
-    const launchedArgs = next.args ?? []
+    // Returns the freshly spawned process; the supervisor keeps ownership.
+    const process_ = await supervisor.restart()
+    const launchedArgs = process_.args ?? []
     const portIndex = launchedArgs.indexOf('--port')
     const port = Number(portIndex >= 0 ? launchedArgs[portIndex + 1] : NaN)
-    if (!Number.isInteger(port) || port <= 0) return
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error('the restarted kernel did not report a port')
+    }
+
     const origin = kernelOrigin(HOST, port)
     const readiness = await waitForReady({
       url: `${origin}/`,
-      isCurrent: () => next.isRunning(),
+      isCurrent: () => process_.isRunning(),
       probe: httpProbe,
     })
-    if (!readiness.ok) return
-    kernel.markReady(`${origin}/`)
+    if (!readiness.ok) {
+      throw new Error(`the restarted kernel never became ready (${readiness.reason})`)
+    }
+
+    // `markReady` lives on the supervisor: it resets the backoff window, which
+    // is what makes a user-initiated restart not count as a crash.
+    supervisor.markReady(`${origin}/`)
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      void mainWindow.loadURL(tokenised(`${origin}/`, next.webToken()))
+      void mainWindow.loadURL(tokenised(`${origin}/`, process_.webToken()))
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`kernel restart failed: ${message}`)
+    // A failed restart must not leave the loading page up forever: say what
+    // happened instead of showing an animation that will never end.
+    if (mainWindow !== null && !mainWindow.isDestroyed()) {
+      const supervisorLog = supervisor.current?.logText?.() ?? ''
+      void mainWindow.loadURL(
+        errorPageHtml({
+          attempts: 0,
+          logTail: tail(`restart failed: ${message}\n\n${supervisorLog}`, 25),
+        }),
+      )
+    }
   }
 }
 
