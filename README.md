@@ -1,379 +1,256 @@
-# DeepSeek Harness Desktop
+# DeepSeek Harness Desktop · Deepin / UOS / Linux 版
 
-An unofficial community desktop shell for the public
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) agent runtime.
+[English](README.en.md) | 中文
 
-`dsh` is a command-line agent runtime that also serves a full web UI. This project wraps
-that runtime in a desktop application: it starts the kernel as a local child process,
-waits until it is genuinely serving, and shows its UI in a hardened window — so the
-runtime can be launched by double-clicking rather than from a terminal.
-
-> **Status: early development.** The kernel itself is an upstream developer preview
-> (`0.1.0-rc.x`) whose configuration surface is still changing. Windows and macOS
-> (Apple Silicon and Intel) are the platforms that have been built end to end; see
-> [Roadmap](#roadmap) for the rest.
-
-| | |
-|:---:|:---:|
-| ![Starting a session](docs/images/01-home.png) | ![Choosing an agent preset](docs/images/02-agent-modes.png) |
-| Starting a session in a workspace | Choosing an agent preset |
-| ![Plugin settings](docs/images/03-settings-plugins.png) | ![General settings](docs/images/04-settings-general.png) |
-| Configuring the kernel's plugins | Presets, permissions, and appearance |
-
-# DeepSeek Harness Desktop  (Deepin / UOS / Linux x86_64 build)
-
-This is a **Deepin / UOS / Linux x86_64 build** of the community
-[DeepSeek Harness Desktop](https://github.com/sleep2agi/DeepSeek-Harness-Desktop)
-shell. The upstream project targets Windows and macOS; this fork keeps the same
-Electron shell intact and adds a Linux packaging path (`deb` + `AppImage`) with
-all of the upstream's security, readiness, and process-tree policies preserved.
+面向 Deepin / UOS / Linux x86_64 的 DeepSeek Harness 桌面壳。把命令行 agent
+运行时 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
 
 ![Running on Deepin 25](docs/images/05-deepin-running.png)
 
-## About this fork
+> **状态**：可用。单测 184/184 通过，已在 Deepin 25 上真机验证（窗口加载、内核就绪、
+> 托盘、菜单、桌面工具浮层）。内核是上游开发预览版，配置面仍在变化。
 
-Everything in this repository is adapted from — and built on top of — two
-upstream projects. Both are public, both use pinned public dependencies, and
-neither is being forked or vendored here:
+---
 
-- **deepseek-ai/deepseek-harness** — the `dsh` kernel and web UI.
-  <https://github.com/deepseek-ai/deepseek-harness>
-- **sleep2agi/DeepSeek-Harness-Desktop** — the Electron desktop shell for
-  Windows and macOS, on top of which this Linux build is based.
-  <https://github.com/sleep2agi/DeepSeek-Harness-Desktop>
+## 这个项目借了谁的力
 
-The Linux-only differences from upstream are:
+本仓库是**站在三个项目肩膀上**的社区整合，不是原创。按实际借鉴关系列清楚：
 
-1. `upstream.lock.json` adds a `linux-x64` Node runtime entry, checksum-verified
-   against nodejs.org, so the kernel is still run on a real Node build rather
-   than Electron-as-Node.
-2. `tools/install-kernel.js` swaps `node-pty` to a release that still ships its
-   Linux native source, since upstream `node-pty@1.1.0` removed its `src/unix/`
-   sources and `npm rebuild` fails on Linux without intervention.
-3. `tools/after-pack.js` validates that the bundled `node` binary is present in
-   the packaged `resources/kernel/` on Linux, as it already does for Windows
-   and macOS.
-4. `package.json` `build.linux` config adds `deb` and `AppImage` targets with
-   the runtime deps a Deepin installation needs.
-
-## Shipped plugins
-
-Out of the box the shell installs a small set of community plugins into every
-user's profile, so the bundled application is useful from the first launch
-rather than starting as an empty runtime. The list is pinned in
-[`upstream.lock.json#shippedPlugins`](upstream.lock.json); today:
-
-| Plugin | What it adds |
-|---|---|
-| `dshmarket` | A visual plugin market inside the kernel UI — browse, search, and one-click install community plugins, no terminal needed. |
-
-The build pipeline (`tools/install-kernel.js`) lays each shipped plugin into
-`resources/kernel/node_modules/<name>/` at install time, and the shell
-registers it into the user's profile on first launch (`src/main.js`,
-`ensureShippedPlugins`). The kernel resolves bundles from both the
-installation anchor and the user's profile, so a plugin installed at build
-time is reachable from any user without each user having to fetch it
-themselves — and once registered, the user can update or remove it from
-inside the kernel UI without touching the bundled copy.
-
-Adding a new shipped plugin is a two-step commit:
-
-1. Add the package name, version, and `sha512` integrity from npm to
-   `upstream.lock.json#shippedPlugins` so the install step verifies what
-   landed on disk.
-2. Re-run `npm run kernel:install`. The plugin is fetched alongside the
-   kernel and gets picked up on the next launch by the auto-discovery in
-   `ensureShippedPlugins` — no shell code change is required.
-
-## Linux-only features added on top of upstream
-
-- **OS menu bar, kept.** The chat UI is still driven entirely by the rendered
-  web surface, but the menu bar is no longer removed: `src/app-menu.js` builds
-  a real application menu (应用 / 文件 / 编辑 / 视图 / 窗口), matching the
-  official shell, which documents that Linux keeps the application and Edit
-  menus. Its first item opens Electron's native **About** panel with the app
-  icon, product name and installed version. DevTools is registered as two
-  *hidden* entries so **F12** and **Ctrl+Shift+I** work in packaged builds
-  without advertising them. `autoHideMenuBar: true` keeps the bar out of the
-  way until Alt is pressed.
-- **Directory-picker fallback.** The official shell falls back to browse mode
-  when Linux has neither `zenity` nor `kdialog`, because Electron's native
-  folder dialog shells out to one of them and silently does nothing without
-  it. `src/directory-picker.js` probes `PATH` and selects the picker;
-  `kernel.directoryPicker` in `config.json` can pin it to `auto`/`browse`/`native`.
-- **Crash reports.** `src/diagnostics.js` writes `crash-<UTC>-<source>.log` to
-  the platform log directory — `logs` under `userData` on Linux and Windows —
-  and keeps the most recent ten, replacing the old unbounded `kernel-exit.log`
-  and `startup-error.log`.
-- **Denied web permissions.** The page in the window is the kernel's web UI, not
-  shell code, so `src/permissions.js` refuses camera, microphone, clipboard and
-  notification requests rather than letting Chromium prompt.
-- **Remembered window geometry.** `src/window-state.js` restores the size and
-  position the user last left, reusing a saved position only when enough of the
-  window would still be visible on a connected display.
-- **Configurable key bindings.** Overrides live in `userData/keybindings.json`,
-  separate from `DSH_HOME`. On Linux a binding is delivered by dispatching into
-  the document, not by intercepting the keystroke — the official shell documents
-  the same split, and it is what keeps editing and IME input working.
-- **Exit confirmation.** `src/exit-guard.js` decides whether quitting prompts
-  first. **This is the one place this shell knowingly differs from upstream**:
-  the official shell asks its Host what quitting would interrupt, over a private
-  IPC channel that belongs to its private Desktop Host package. This shell has
-  no such channel, so the policy is declared in `kernel.exitPolicy`
-  (`ask-always` by default) rather than derived.
-- **System tray + hide-to-tray.** `src/tray.js` registers an Electron `Tray`
-  with a Show/Hide/Quit menu; clicking the X on the main window hides it
-  instead of quitting, and the kernel keeps running in the background. An
-  explicit Quit (tray menu or `before-quit`) is what tears the whole app down.
-- **Background-completion toast.** `src/dom-observer.js` is injected via
-  `webContents.executeJavaScript` after every page load and uses a
-  `MutationObserver` to watch the kernel's web UI for an in-flight indicator
-  (`aria-busy="true"`, `data-state="generating"`, `思考中` / `生成中`, and the
-  `dsh-generating` / `dsh-thinking` / `dsh-streaming` class names). The
-  busy → idle transition fires a desktop notification through the shell.
-- **In-page desktop controls.** The `dsh-deepin-controls` plugin under
-  [`plugins/`](plugins/dsh-deepin-controls) adds a small floating **桌面工具**
-  panel inside the web UI that mirrors the tray's actions — restart kernel,
-  check for updates, toggle autostart, About, hide window, quit — plus a live
-  status line. It is mounted the same way the official shell mounts its own
-  controls: a bundle whose `package.json` declares `dsh.bundle.patch`, inserted
-  through the profile's patch layer. Nothing about it needs the official
-  private Desktop Host package.
-
-  The preload stays narrow: the page calls `shell.invoke(name)` with an action
-  *name* only, and the main process looks it up in `DESKTOP_ACTIONS`
-  (`src/desktop-commands.js`) and refuses anything else. The page cannot reach
-  an IPC handler this shell did not mean to expose, and the state pushed back
-  to it is reduced to a phase, a busy flag and the autostart flag — no paths,
-  tokens or log lines.
-
-Everything above is the upstream web UI, served by the kernel and rendered in the shell's
-window. The shell contributes the window, the process, and the security policy around
-them — not the interface — with the one exception of the in-page controls above, which
-the shell expressly allows through a fixed allowlist.
-
-## What this is, and what it is not
-
-This repository contains **only the desktop shell**. All agent behaviour — models, tools,
-sessions, permissions, the web UI — comes from the upstream kernel and its plugins.
-
-The shell owns four things, and deliberately nothing else:
-
-| Concern | What the shell does |
-|---|---|
-| **Process** | Starts `dsh` as a child process on a free port, and shuts down the whole process tree on exit. |
-| **Readiness** | Waits for a real HTTP response from *this* launch before showing a window. |
-| **Window** | Applies a fixed security policy: sandboxed renderer, exact-origin navigation allowlist, `http`/`https`-only external links. |
-| **Configuration** | Expresses its preferences as a patch overlay, through the kernel's own supported mechanism, without modifying upstream code. |
-
-Nothing upstream is patched or vendored-and-edited. The kernel is installed from npm at a
-pinned version, and every shell preference goes through `--patch`, which is a first-class
-part of the launcher's configuration layering.
-
-## Design notes
-
-A few decisions that are easy to get wrong, and why this shell makes them the way it does.
-
-**An open port is not a ready server.** The kernel's web server binds its port during
-startup, and a plugin failing afterwards can still bring the process down. In that window
-a TCP connection succeeds while nothing is being served, and a window pointed at it shows
-a blank page. Readiness therefore requires a real HTTP 2xx/3xx response.
-
-**Readiness is bound to one launch.** Every probe attempt re-checks that the process being
-waited on is still the current one. Otherwise a kernel that died and left its port to
-another program on the machine would answer the probe perfectly well — with someone else's
-server.
-
-**Navigation is compared as an exact origin.** `startsWith('http://127.0.0.1:')` also
-matches any other service running locally, and `includes('127.0.0.1')` matches
-`http://evil.example/?x=127.0.0.1`. The loaded page decides its own links; the shell does
-not get to assume they are benign.
-
-**Secrets are redacted as they enter the log buffer,** not as they leave it. Redacting at
-read time still leaves the plaintext sitting in this process's memory until then. The
-matching is by shape and cannot be complete — it is a second line of defence, not a
-guarantee.
-
-**The kernel gets its own `DSH_HOME`,** and every inherited `DSH_*` variable is dropped.
-Sharing a home directory with a `dsh` the user installed themselves would have the two
-overwrite each other's configuration, and would put the user's own stored credentials
-within reach of this process.
-
-**Telemetry is switched off explicitly.** Upstream already defaults it to disabled; the
-shell states it anyway, so the default is a property of this application rather than of
-whichever kernel version happens to be bundled.
-
-**The kernel runs on its own bundled Node, not on Electron's.** Those are different
-runtimes, and the difference is not theoretical. With an identical kernel and an identical
-configuration, launched under Electron-as-Node the kernel aborts during startup:
-
-```
-failed to apply loader entry … (@deepseek-ai/cordis-plugin-hmr):
-  --expose-internals is required for HMR service
-```
-
-and on a stock Node build of the same major version it starts cleanly. Notably this
-happens *after* the web server is already answering HTTP — so even a real HTTP response is
-not proof that the process will stay up, which is why an unexpected kernel exit is
-reported rather than silently leaving a window pointed at nothing.
-
-The bundled runtime is downloaded from nodejs.org, checked against the SHA-256 published
-in that release's `SHASUMS256.txt`, and then asked what version it is. Both checks fail the
-build rather than warn.
-
-**What ships is not what npm installs.** An npm tree is published for developers: debug
-symbols, source maps, the TypeScript the JavaScript was built from, documentation, and
-prebuilt binaries for every platform. None of it is opened by a running application, and
-all of it would ship to every user — 180 MB of the installed size. `tools/prune-kernel.js`
-removes it, keeping licences and notices in every spelling, since redistributing
-MIT-licensed code without its licence text is a violation. The end-to-end test runs against
-the pruned kernel, so a size win that broke startup fails the build.
-
-## Download and install
-
-Release builds are published on
-[GitHub Releases](https://github.com/westanke/dsh-desktop-deepin/releases). Two Linux
-formats are produced:
-
-| Format | Covers | Notes |
+| 项目 | 借鉴了什么 | 链接 |
 |---|---|---|
-| `*.deb` | Debian / Ubuntu / **UOS / Deepin** / Kylin | Installs into `/opt`, registers a launcher and an icon |
-| `*.AppImage` | any Linux x86_64 | No installation; make it executable and run it |
+| **deepseek-ai/deepseek-harness** | 内核 `dsh` 本体、Web UI、插件机制。所有 agent 能力（模型、工具、会话、权限）都来自它 | <https://github.com/deepseek-ai/deepseek-harness> |
+| **sleep2agi/DeepSeek-Harness-Desktop** | 本仓库的**代码基线**。窗口安全策略、就绪探测、进程树回收、日志脱敏、打包流程都源自这份社区壳 | <https://github.com/sleep2agi/DeepSeek-Harness-Desktop> |
+| **citrusli2026/dsh-desktop** | 官方桌面端的行为参照：菜单/托盘/安全模式/退出确认的**设计意图**来自它的实现，以及 UOS/Deepin 适配经验（Issue #73） | <https://github.com/citrusli2026/dsh-desktop> |
+| **anywhere-labs/dsh-desktop** | Linux deb 打包工艺参照：其 PR #1120 实测出「`dpkg -i` 缺依赖失败，须用 `apt install ./x.deb`」，本 README 直接采用该结论 | <https://github.com/anywhere-labs/dsh-desktop> |
 
-**Use `apt`, not `dpkg -i`, to install the deb.** `dpkg` installs without resolving
-dependencies and will fail on a machine missing any of the runtime libraries this build
-declares (`libgtk-3-0`, `libnotify4`, `libnss3`, `libxss1`, `libxtst6`, `xdg-utils`,
-`libatspi2.0-0`, `libayatana-appindicator3-1`); `apt` fetches them and completes cleanly:
+`deepseek-ai/deepseek-harness` 官方 `apps/desktop` 的实现细节也作为行为基准被对照，
+但它**不发布 Linux 产物**，且其私有发布单元（见下）无法获取。
+
+---
+
+## 下载与安装
+
+发布包在 [GitHub Releases](https://github.com/westanke/dsh-desktop-deepin/releases)。
+
+| 格式 | 覆盖系统 | 说明 |
+|---|---|---|
+| `*.deb` | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 装到 `/opt`，注册启动器与图标 |
+| `*.AppImage` | 任意 Linux x86_64 | 免安装，赋可执行权限直接跑 |
+
+### 请用 apt 安装 deb，不要用 dpkg -i
+
+`dpkg -i` 不解析依赖，缺库时直接失败。本包声明的运行时依赖：
+
+```
+libgtk-3-0  libnotify4  libnss3  libxss1  libxtst6
+xdg-utils  libatspi2.0-0  libayatana-appindicator3-1
+```
 
 ```sh
-sudo apt install ./DeepSeek-Harness-Desktop-<version>-amd64.deb
+sudo apt install ./DeepSeek-Harness-Desktop-<版本>-amd64.deb
 ```
 
-On Deepin/UOS, a newly installed launcher may ask whether to trust the application on
-first launch; confirm it. Trust is recorded per-user, so a launcher that appears to do
-nothing on the first double-click is usually this prompt, not a failure.
+> 该结论来自 anywhere-labs PR #1120 的 Ubuntu 24.04 真机验证，非推测。
 
-To remove it again:
+Deepin/UOS 上首次双击启动器可能询问「是否信任该应用」，确认即可。信任按用户记录，
+所以「点了没反应」通常是这个询问，不是启动失败。
+
+卸载：
 
 ```sh
 sudo apt remove deepseek-harness-desktop
 ```
 
-Your Harness home (`~/.dsh` or `$DSH_HOME` — sessions, settings, credentials, plugins) is
-**not** touched by uninstalling; only the application and its Electron user data go.
+卸载**不会**动你的内核数据（`~/.dsh` 或 `$DSH_HOME`：会话、设置、凭据、插件），
+只移除应用本体与 Electron 用户数据。
 
-### Building the packages yourself
+---
 
-Packaging is not automatic — GitHub Actions only runs what a workflow tells it to. The
-workflow lives at [`ci/package-linux.yml`](ci/package-linux.yml); it calls
-`electron-builder` on `ubuntu-latest` and collects the artifacts. Move it to
-`.github/workflows/` to enable it, or run the same command locally:
+## 功能（按实际实现）
+
+### 内核与进程
+
+| 功能 | 实现位置 | 说明 |
+|---|---|---|
+| 内核启动与就绪判定 | `src/kernel-process.js` `src/readiness.js` | 必须拿到真实 HTTP 响应才算就绪；端口开着不算 |
+| 崩溃自动重启 | `src/kernel-supervisor.js` `src/restart-policy.js` | 指数退避，10 分钟窗口内最多 5 次，超出则放弃并报错 |
+| 进程组整体回收 | `src/kernel-process.js` | Unix 下子进程自任组长，退出时 `kill(-pid)` 连孙进程一起收 |
+| 系统内核模式 | `src/main.js` `resolveKernelPaths` | 设 `DSH_KERNEL_BIN` 即可驱动系统已装的 `dsh`，用真 Node 跑 |
+| 固定端口 | `src/main.js` `preferredPort` | 默认 `19387`（官方同款）；被占用则自动退回随机端口 |
+| 崩溃报告 | `src/diagnostics.js` | 写 `userData/logs/crash-<UTC>-<来源>.log`，保留最新 10 份，输出限 64 KiB |
+
+### 桌面集成
+
+| 功能 | 实现位置 | 说明 |
+|---|---|---|
+| 应用菜单 | `src/app-menu.js` | 应用/文件/编辑/视图/窗口 五组；首项「关于」开原生面板 |
+| DevTools 快捷键 | `src/app-menu.js` | F12 与 Ctrl+Shift+I，注册为隐藏菜单项，打包版同样有效 |
+| 系统托盘 | `src/tray.js` | 显示/隐藏/重启内核/检查更新/安全模式/开机自启/退出，带实时状态行 |
+| 关闭即隐藏 | `src/tray.js` `src/main.js` | 关窗只隐藏，内核与任务继续跑；退出走托盘或菜单 |
+| 退出确认 | `src/exit-guard.js` | 退出前弹确认框，策略见 `kernel.exitPolicy` |
+| 窗口几何记忆 | `src/window-state.js` | 记住尺寸位置；显示器拔掉后不会把窗口丢到屏幕外 |
+| 托盘图标 | `assets/trayTemplate.png` | Linux 任务栏图标 |
+
+### 网页内桌面工具
+
+浮动面板 **桌面工具**，由插件
+[`plugins/dsh-deepin-controls`](plugins/dsh-deepin-controls) 提供，通过内核的
+`dsh.bundle.patch` 机制挂载（与官方桌面端挂自己控件的方式相同，不依赖其私有包）。
+
+六项动作全部镜像托盘已有能力，页面未获得额外权限：
+
+| 动作 | 需确认 |
+|---|---|
+| 重启内核 / 检查更新 / 开机自启 / 关于 / 隐藏窗口 | 否 |
+| 退出 | **是** |
+
+安全性：页面只能传**动作名**，主进程在 `src/desktop-commands.js` 的白名单里查，
+其余一律拒绝；回推给页面的状态经脱敏，只含 `phase`/`busy`/`launchAtLogin`/`safeMode`。
+
+### 安全模式
+
+插件崩到内核起不来时，壳自己也进不去、无法卸载插件——死锁。安全模式是这个死锁的出口：
+
+- 停用**全部第三方 bundle**（`@deepseek-ai/dsh-base`、`dsh-web-app` 受保护，否则没界面）
+- 用户 patch 层**备份改名**而非改写：`cordis.patch.yml` → `cordis.patch.yml.bak-<UTC>`
+- **不持久化**：恢复动作不是偏好，下次正常启动插件自动回来
+
+三个入口都能触发：托盘菜单、应用菜单、网页浮层。实现见 `src/safe-mode.js`。
+
+### 安全策略
+
+| 项 | 实现 | 说明 |
+|---|---|---|
+| 导航白名单 | `src/window-policy.js` | 仅精确 origin 可导航；外链限 http/https 交系统浏览器 |
+| 渲染进程权限全拒 | `src/permissions.js` | 摄像头/麦克风/通知/剪贴板一律拒绝 |
+| 沙箱与隔离 | `src/window-policy.js` | `contextIsolation` + 无 Node 集成 |
+| 日志脱敏 | `src/log-redact.js` | 进缓冲区即脱敏，超限丢弃并计数 |
+| 配置原子写 | `src/config-file.js` | 临时文件 + rename，加文件锁（陈旧锁可破） |
+| 渲染崩溃自愈 | `src/main.js` | 60 秒内最多 3 次 reload，超出显示错误页 |
+
+---
+
+## 配置
+
+所有可调项集中在 [`config.json`](config.json)，改它不用动代码。常用项：
+
+| 键 | 取值 | 说明 |
+|---|---|---|
+| `launcher.systemDsh` | 路径 | 系统 `dsh` 可执行文件 |
+| `launcher.userDataDir` | 路径 | 壳的 userData，日志落这里 |
+| `kernel.homeSubdir` | 路径 | `DSH_HOME`，相对则拼在 userData 下 |
+| `kernel.profile` | `web` 等 | 启动 profile |
+| `kernel.directoryPicker` | `auto`/`browse`/`native` | `auto` 时：Linux 有 zenity 或 kdialog 用原生对话框，都没有则降级浏览模式 |
+| `kernel.exitPolicy` | `ask-always`/`ask-if-busy`/`never` | 退出确认策略，默认最保守 |
+| `supervisor.*` | 数值 | 重启窗口、次数、退避、就绪超时 |
+| `tray.rechargeUrl` | URL | 托盘充值入口（默认不显示） |
+
+---
+
+## 环境要求
+
+**跑打包版**：无额外要求，内核与 Node 运行时都在包里。
+
+**开发**：Node.js ≥ 22.15.0（内核用了 `zlib.createZstdDecompress`）。
+
+**系统内核模式**：需要本机已装 `dsh`，设 `DSH_KERNEL_BIN` 指向它。此模式下不下载
+bundled 内核，内核版本就是你装的那个。
+
+---
+
+## 开发
 
 ```sh
-npm ci
-npm test
-npm run kernel:install
+npm install              # 壳依赖（Electron、builder、类型）
+npm test                 # 单元测试，184 个，不联网、不需要 Electron
+npm run typecheck        # tsc --noEmit
+npm run kernel:install   # 按 upstream.lock.json 下载并校验内核
+npm start                # 启动
+```
+
+### 打包
+
+打包**不是自动的**——GitHub Actions 只是执行器，得由 workflow 驱动。本仓库有三个：
+
+| workflow | 触发 | 作用 |
+|---|---|---|
+| `.github/workflows/ci.yml` | push main / PR | 三平台跑测试 + scan-leaks |
+| `.github/workflows/release.yml` | 打 `v*` tag | 三平台打包发布 |
+| `.github/workflows/package-linux.yml` | 打 `v*` tag / 手动 | **deb + AppImage 打包并挂到 release** |
+
+手动触发打包（或在 Actions 页面点 Run workflow）：
+
+```sh
+gh workflow run package-linux.yml --repo westanke/dsh-desktop-deepin
+```
+
+本地打包：
+
+```sh
+npm ci && npm test && npm run kernel:install
 npx electron-builder --linux deb --linux AppImage --publish never
 ```
 
-Artifacts land in `release/`.
+产物在 `release/`。
 
-## Requirements
+### 模块布局
 
-**To run a packaged build:** nothing. The kernel and its Node runtime are inside the
-installer.
+不依赖 Electron 的纯决策模块（可直接单测）：
 
-**To develop:** Node.js ≥ 22.15.0 — the kernel uses `zlib.createZstdDecompress`, which does
-not exist in earlier versions.
-
-Windows and macOS ship a bundled, checksum-verified Node runtime, so a packaged build has
-no external requirements. Linux is expected to work but has not been exercised, and still
-falls back to the system Node.
-
-This build also supports **system-kernel mode**: point `DSH_KERNEL_BIN` at an
-already-installed `dsh` and the shell drives that instead of the bundled kernel — no
-bundled download, and the kernel version is whatever you have installed. See
-`launcher.systemDsh` and `kernel.homeSubdir` in [`config.json`](config.json).
-
-## Development
-
-```sh
-npm install          # shell dependencies (Electron, builder, types)
-npm test             # unit tests for every load-bearing decision — no network, no Electron
-npm run kernel:install   # fetch the pinned kernel into resources/kernel
-npm start            # launch the shell against it
-npm run dist:mac     # signed-ad-hoc .dmg and .zip for this Mac
-npm run dist:win     # NSIS installer and .zip for Windows
-```
-
-The kernel version is pinned in [`upstream.lock.json`](upstream.lock.json), which is the
-single source of truth for it. Upgrading is an explicit commit, not something a rebuild
-does on its own — upstream is a developer preview and documents that it will make
-breaking changes.
-
-### Layout
-
-Load-bearing *decisions* live in plain modules with no Electron or filesystem imports, so
-they can be tested directly:
-
-| Module | Decides |
+| 模块 | 决定什么 |
 |---|---|
-| `src/window-policy.js` | Where the window may navigate; what may be handed to the OS. |
-| `src/kernel-runtime.js` | The kernel's argument vector and environment. |
-| `src/readiness.js` | When the kernel counts as ready. |
-| `src/log-redact.js` | What may enter the log buffer, and how much is kept. |
-| `src/restart-policy.js` | Whether a dead kernel gets another attempt, and after how long. |
-| `src/directory-picker.js` | Whether the native folder dialog can be trusted on this platform. |
-| `src/app-menu.js` | The OS menu bar's structure, including the About panel. |
-| `src/shortcuts.js` | Which bindings are accepted, and how one is delivered. |
-| `src/window-state.js` | Whether a remembered size and position can be reused. |
-| `src/exit-guard.js` | Whether quitting should prompt first. |
-| `src/diagnostics.js` | Where a crash report goes, and how many are kept. |
-| `src/config-file.js` | How a shell configuration file is written without tearing. |
+| `src/window-policy.js` | 窗口能导航到哪、什么能交给系统 |
+| `src/readiness.js` | 内核何时算真就绪 |
+| `src/restart-policy.js` | 死掉的内核是否再给一次机会 |
+| `src/directory-picker.js` | 本平台能否信任原生目录对话框 |
+| `src/app-menu.js` | 应用菜单结构 |
+| `src/shortcuts.js` | 接受哪些键位、按键如何投递 |
+| `src/window-state.js` | 记住的窗口几何能否复用 |
+| `src/exit-guard.js` | 退出前是否要问 |
+| `src/safe-mode.js` | 安全模式该停用哪些 bundle |
+| `src/diagnostics.js` | 崩溃报告写哪、留几份 |
+| `src/config-file.js` | 配置如何写才不撕裂 |
+| `src/desktop-commands.js` | 网页能请求哪些桌面动作 |
 
-`src/main.js` does IO and orchestration only.
+其余模块（`main.js`、`tray.js`、`kernel-*.js`、`preload.js`、`dom-observer.js`、
+`loading-page.js`、`update.js`、`log-redact.js`、`node-runtime.js`、`shell-patch.js`）
+负责 Electron 与进程 IO。
 
-## Roadmap
+---
 
-- [x] Kernel launch, argument and environment construction
-- [x] Readiness probe bound to a single launch
-- [x] Window and navigation security policy
-- [x] Bounded, redacted log capture
-- [x] Bundled, checksum-verified Node runtime
-- [x] Windows installer, verified by launching it and loading the UI
-- [x] macOS build (Apple Silicon and Intel runtimes; `.dmg` + `.zip`)
-- [ ] Linux builds
-- [ ] Workspace picker fix — the native picker crashes on Windows in the current kernel
-      preview; `buildShellPatch({ useBrowseDirectoryPicker: true })` selects the non-native
-      implementation, and it is not enabled by default yet
+## 与官方桌面端的差异（诚实说明）
 
-### macOS notes
+官方 `deepseek-ai/deepseek-harness` 的 `apps/desktop` 明确写着「Linux 不是受支持的
+Desktop 发布目标」。其部分能力**无法获取**，因为它们不是公开包，而是与签名产物绑定的
+私有发布单元：
 
-Packaged builds are ad-hoc signed, not notarized. A download from the internet will be
-quarantined by Gatekeeper. Right-click the app and choose Open, or:
+- 私有 Desktop Host 包（带 `desktop` 的包名在 npm 上 404）
+- `dsh-app://app` 打包 Web 入口、`desktop-runtime.json` 签名校验
+- 内置 Python / Node / pnpm 三件套分发
+- 官方 COS 更新源、Windows EV 签名与 macOS 公证
+- 平台账号登录（PKCE）
 
-```sh
-xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
-```
+**能复刻的已做**：官方 README 点名 Linux 的三处（目录选择器降级、快捷键 DOM 分发、
+保留应用菜单与 Edit 菜单）加通用项（关于面板、DevTools 快捷键、默认端口 19387、
+权限全拒、窗口几何、崩溃日志、退出确认）。
 
-A Mac launched from the Dock has a minimal `PATH`. The shell prepends Homebrew's usual
-locations (`/opt/homebrew/bin`, `/usr/local/bin`) so the kernel can still find `git` and
-the rest of a developer toolchain.
+**只能近似的**：退出前「是否有任务在跑」的查询。官方通过私有 IPC 问 Host，本壳没有
+这条通道，因此改为可配置策略（默认每次都问）。
 
-## Independence
+**一处刻意的架构差异**：官方用 `ELECTRON_RUN_AS_NODE=1` + `--expose-internals` 把
+Electron 当 Node 跑内核（目标是不依赖系统 Node）；本壳用真 Node。后者已真机验证，
+更稳，故保留。
 
-Everything here is written from public sources against pinned public dependencies. It does
-not copy private product code, and contains no organization-specific branding,
-authentication clients, private endpoints, update feeds, credentials, or telemetry. The
-`scan:leaks` check in CI enforces this against the working tree and the committed history,
-and fails the build rather than warning.
+---
 
-This project is not affiliated with or endorsed by DeepSeek.
+## 独立性
 
-## Licence
+代码全部依据公开来源编写，依赖均为公开包。不含私有产品代码、组织专属品牌、
+认证客户端、私有端点、更新源、凭据或遥测。`npm run scan:leaks` 在 CI 中对此做强制检查。
 
-Repository-authored code is MIT — see [LICENSE](LICENSE).
+本项目与 DeepSeek 无隶属或背书关系。
 
-This project bundles the upstream `@deepseek-ai/dsh` kernel, which is also MIT-licensed.
-Third-party components retain their own licences, redistributed with the packaged
-application; see [NOTICE](NOTICE) for attribution and the trademark position.
+## 许可证
+
+本仓库代码 MIT，见 [LICENSE](LICENSE)。随包分发上游 `@deepseek-ai/dsh` 内核（同为 MIT）。
+第三方组件保留各自许可证，归属声明见 [NOTICE](NOTICE)。
