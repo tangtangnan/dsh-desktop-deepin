@@ -35,6 +35,7 @@
  * @typedef {object} AppMenuEnvironment
  * @property {string} platform - `process.platform`
  * @property {string} appName - product name, used in the application menu label
+ * @property {boolean} [safeMode] - whether Safe Mode is currently on
  */
 
 /**
@@ -45,6 +46,7 @@
  * @property {() => void} reload
  * @property {() => void} toggleDevTools
  * @property {() => void} checkForUpdates
+ * @property {() => void} toggleSafeMode
  */
 
 /**
@@ -58,7 +60,7 @@
  * @param {AppMenuActions} actions
  * @returns {import('electron').MenuItemConstructorOptions[]}
  */
-export function buildAppMenuTemplate({ platform, appName }, actions) {
+export function buildAppMenuTemplate({ platform, appName, safeMode = false }, actions) {
   const isMac = platform === 'darwin'
 
   /** The application menu: About first, then updates, then quit. */
@@ -68,6 +70,10 @@ export function buildAppMenuTemplate({ platform, appName }, actions) {
       { label: `关于 ${appName}`, click: actions.showAbout },
       { type: 'separator' },
       { label: '检查更新…', click: actions.checkForUpdates },
+      {
+        label: safeMode ? '退出安全模式并重启' : '以安全模式重启（停用第三方插件）',
+        click: actions.toggleSafeMode,
+      },
       { type: 'separator' },
       // macOS-only window and service roles; other platforms have no business
       // pretending to hide other applications.
