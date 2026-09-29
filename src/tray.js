@@ -194,6 +194,12 @@ export class ShellTray {
   /** @returns {void} */
   #registerShortcut() {
     try {
+      // `globalShortcut` is reached through `loadElectron()`, not as a module
+      // binding — this module deliberately has no top-level Electron import so
+      // its pure parts stay testable under plain Node. Referring to it bare
+      // threw a ReferenceError, the catch below swallowed it, and the summon
+      // shortcut was therefore never registered.
+      const { globalShortcut } = loadElectron()
       this.#shortcutRegistered = globalShortcut.register(SUMMON_ACCELERATOR, () => this.#focus())
     } catch {
       this.#shortcutRegistered = false
@@ -252,6 +258,43 @@ export class ShellTray {
   setSafeMode(enabled) {
     this.#safeMode = enabled
     this.#refreshMenu()
+  }
+
+  /**
+   * Shows a desktop notification.
+   *
+   * This is what the renderer's `shell.notify` bridge ends up calling when the
+   * DOM observer sees a turn finish. The method did not exist until now, so
+   * every notification threw and was swallowed by the preload's try/catch —
+   * the feature was silently dead.
+   *
+   * Delivery prefers the tray's own balloon, which is tied to the icon the
+   * user already associates with the app; the standalone Electron
+   * `Notification` is the fallback for environments without tray balloons.
+   *
+   * @param {string} title
+   * @param {string} body
+   * @returns {void}
+   */
+  notify(title, body) {
+    const text = String(title ?? '')
+    const detail = String(body ?? '')
+    try {
+      if (this.#tray !== null && typeof this.#tray.displayBalloon === 'function') {
+        this.#tray.displayBalloon({ title: text, content: detail })
+        return
+      }
+    } catch {
+      // Fall through to the standalone notification.
+    }
+    try {
+      const { Notification } = loadElectron()
+      if (typeof Notification !== 'function') return
+      if (typeof Notification.isSupported === 'function' && !Notification.isSupported()) return
+      new Notification({ title: text, body: detail }).show()
+    } catch {
+      // A notification that cannot be shown must never break the caller.
+    }
   }
 
   /** @returns {void} */
