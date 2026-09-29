@@ -33,6 +33,7 @@ const STYLE = `
     background: rgba(255,255,255,.06); font: 12px/1.55 ui-monospace, monospace;
     white-space: pre-wrap; word-break: break-word; margin: 0 0 16px; }
   .label { font-size: 12px; opacity: .55; margin: 18px 0 6px; }
+  .elapsed { font-size: 12px; opacity: .45; margin-top: 10px; font-variant-numeric: tabular-nums; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   button { padding: 7px 14px; border-radius: 7px; border: 1px solid rgba(255,255,255,.18);
     background: rgba(255,255,255,.08); color: inherit; font: inherit; cursor: pointer; }
@@ -70,17 +71,36 @@ function asDataUrl(html) {
  * The page shown while the kernel starts.
  *
  * @param {object} [options]
- * @param {'launching' | 'waiting-for-ready' | 'retrying'} [options.stage]
+ * @param {'preparing' | 'launching' | 'waiting-for-ready' | 'retrying'} [options.stage]
  * @param {number} [options.retryDelayMs] - only meaningful for `retrying`
+ * @param {number} [options.startedAt] - epoch millis the wait began, so the
+ *   elapsed counter is continuous across page swaps
  * @returns {string} a `data:` URL
  */
-export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0 } = {}) {
+export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0, startedAt = 0 } = {}) {
   const text =
-    stage === 'waiting-for-ready'
-      ? '正在等待内核就绪…'
-      : stage === 'retrying'
-        ? `内核退出，${Math.ceil(retryDelayMs / 1000)} 秒后重试…`
-        : '正在启动内核…'
+    stage === 'preparing'
+      ? '正在准备启动…'
+      : stage === 'waiting-for-ready'
+        ? '正在等待内核就绪…'
+        : stage === 'retrying'
+          ? `内核退出，${Math.ceil(retryDelayMs / 1000)} 秒后重试…`
+          : '正在启动内核…'
+
+  // A counter that ticks while the page is up. Electron can take seconds to
+  // become ready on a cold start, and a spinner with no sense of elapsed time
+  // is indistinguishable from a hang — which is exactly the complaint this
+  // page exists to answer. The script is inline and dependency-free because
+  // the page is a `data:` URL with `default-src 'none'`.
+  const since = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : 0
+  const ticker =
+    stage === 'preparing'
+      ? ''
+      : `<script>(function(){var t0=${since || 'Date.now()'};var el=document.getElementById('elapsed');` +
+        `if(!el)return;function pad(n){return n<10?'0'+n:''+n}` +
+        `function tick(){var s=Math.floor((Date.now()-t0)/1000);` +
+        `el.textContent=s<60?('已等待 '+s+' 秒'):('已等待 '+Math.floor(s/60)+' 分 '+pad(s%60)+' 秒')}` +
+        `tick();setInterval(tick,1000)})()<\/script>`
 
   return asDataUrl(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
     <title>DeepSeek Harness Desktop</title>
@@ -90,6 +110,8 @@ export function loadingPageHtml({ stage = 'launching', retryDelayMs = 0 } = {}) 
     <body><main>
       <div class="brand">DEEPSEEK HARNESS</div>
       <div class="stage"><span class="dot"></span><span>${escapeHtml(text)}</span></div>
+      <div class="elapsed" id="elapsed"></div>
+      ${ticker}
     </main></body></html>`)
 }
 
