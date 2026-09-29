@@ -24,7 +24,7 @@
  * @module config-file
  */
 
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat as fsStat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 /**
@@ -51,8 +51,13 @@ const LOCK_RETRY_MS = 25
  * @returns {Promise<void>}
  */
 function delay(ms) {
+  // Deliberately *not* unref'd. An unref'd timer does not keep the event loop
+  // alive, so a caller waiting for a lock could have the process decide there
+  // is nothing left to do and exit with the wait still pending — which is
+  // exactly what happened under CI, where the timing differs from a developer
+  // machine. Waiting for a lock is real work, not a background nicety.
   return new Promise((resolve) => {
-    setTimeout(resolve, ms).unref?.()
+    setTimeout(resolve, ms)
   })
 }
 
@@ -94,7 +99,11 @@ export async function atomicWriteFile(path, contents) {
  * @param {(path: string) => Promise<{ mtimeMs: number }>} [options.stat]
  * @returns {Promise<T>}
  */
-export async function withFileLock(path, operation, { timeoutMs = 5_000, now = () => Date.now(), stat } = {}) {
+export async function withFileLock(
+  path,
+  operation,
+  { timeoutMs = 5_000, now = () => Date.now(), stat = fsStat } = {},
+) {
   const lockPath = `${path}.lock`
   const deadline = now() + timeoutMs
 
@@ -133,7 +142,6 @@ export async function withFileLock(path, operation, { timeoutMs = 5_000, now = (
  * @returns {Promise<boolean>}
  */
 async function isStale(lockPath, now, stat) {
-  if (stat === undefined) return false
   try {
     const info = await stat(lockPath)
     return now() - info.mtimeMs > LOCK_STALE_MS
