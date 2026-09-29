@@ -125,19 +125,32 @@ Adding a new shipped plugin is a two-step commit:
   with a Show/Hide/Quit menu; clicking the X on the main window hides it
   instead of quitting, and the kernel keeps running in the background. An
   explicit Quit (tray menu or `before-quit`) is what tears the whole app down.
-- **Background-completion toast.** `src/preload.js` exposes exactly two
-  methods (`shell.notify`, `shell.onShown`) through a sandboxed
-  `contextBridge` — the entire renderer-facing surface.
-  `src/dom-observer.js` is injected via `webContents.executeJavaScript` after
-  every page load and uses a `MutationObserver` to watch the kernel's web UI
-  for an in-flight indicator (`aria-busy="true"`, `data-state="generating"`,
-  `思考中` / `生成中`, and the `dsh-generating` / `dsh-thinking` /
-  `dsh-streaming` class names). The busy → idle transition fires a desktop
-  notification through the shell.
+- **Background-completion toast.** `src/dom-observer.js` is injected via
+  `webContents.executeJavaScript` after every page load and uses a
+  `MutationObserver` to watch the kernel's web UI for an in-flight indicator
+  (`aria-busy="true"`, `data-state="generating"`, `思考中` / `生成中`, and the
+  `dsh-generating` / `dsh-thinking` / `dsh-streaming` class names). The
+  busy → idle transition fires a desktop notification through the shell.
+- **In-page desktop controls.** The `dsh-deepin-controls` plugin under
+  [`plugins/`](plugins/dsh-deepin-controls) adds a small floating **桌面工具**
+  panel inside the web UI that mirrors the tray's actions — restart kernel,
+  check for updates, toggle autostart, About, hide window, quit — plus a live
+  status line. It is mounted the same way the official shell mounts its own
+  controls: a bundle whose `package.json` declares `dsh.bundle.patch`, inserted
+  through the profile's patch layer. Nothing about it needs the official
+  private Desktop Host package.
+
+  The preload stays narrow: the page calls `shell.invoke(name)` with an action
+  *name* only, and the main process looks it up in `DESKTOP_ACTIONS`
+  (`src/desktop-commands.js`) and refuses anything else. The page cannot reach
+  an IPC handler this shell did not mean to expose, and the state pushed back
+  to it is reduced to a phase, a busy flag and the autostart flag — no paths,
+  tokens or log lines.
 
 Everything above is the upstream web UI, served by the kernel and rendered in the shell's
 window. The shell contributes the window, the process, and the security policy around
-them — not the interface.
+them — not the interface — with the one exception of the in-page controls above, which
+the shell expressly allows through a fixed allowlist.
 
 ## What this is, and what it is not
 
@@ -216,6 +229,55 @@ removes it, keeping licences and notices in every spelling, since redistributing
 MIT-licensed code without its licence text is a violation. The end-to-end test runs against
 the pruned kernel, so a size win that broke startup fails the build.
 
+## Download and install
+
+Release builds are published on
+[GitHub Releases](https://github.com/westanke/dsh-desktop-deepin/releases). Two Linux
+formats are produced:
+
+| Format | Covers | Notes |
+|---|---|---|
+| `*.deb` | Debian / Ubuntu / **UOS / Deepin** / Kylin | Installs into `/opt`, registers a launcher and an icon |
+| `*.AppImage` | any Linux x86_64 | No installation; make it executable and run it |
+
+**Use `apt`, not `dpkg -i`, to install the deb.** `dpkg` installs without resolving
+dependencies and will fail on a machine missing any of the runtime libraries this build
+declares (`libgtk-3-0`, `libnotify4`, `libnss3`, `libxss1`, `libxtst6`, `xdg-utils`,
+`libatspi2.0-0`, `libayatana-appindicator3-1`); `apt` fetches them and completes cleanly:
+
+```sh
+sudo apt install ./DeepSeek-Harness-Desktop-<version>-amd64.deb
+```
+
+On Deepin/UOS, a newly installed launcher may ask whether to trust the application on
+first launch; confirm it. Trust is recorded per-user, so a launcher that appears to do
+nothing on the first double-click is usually this prompt, not a failure.
+
+To remove it again:
+
+```sh
+sudo apt remove deepseek-harness-desktop
+```
+
+Your Harness home (`~/.dsh` or `$DSH_HOME` — sessions, settings, credentials, plugins) is
+**not** touched by uninstalling; only the application and its Electron user data go.
+
+### Building the packages yourself
+
+Packaging is not automatic — GitHub Actions only runs what a workflow tells it to. The
+workflow lives at [`ci/package-linux.yml`](ci/package-linux.yml); it calls
+`electron-builder` on `ubuntu-latest` and collects the artifacts. Move it to
+`.github/workflows/` to enable it, or run the same command locally:
+
+```sh
+npm ci
+npm test
+npm run kernel:install
+npx electron-builder --linux deb --linux AppImage --publish never
+```
+
+Artifacts land in `release/`.
+
 ## Requirements
 
 **To run a packaged build:** nothing. The kernel and its Node runtime are inside the
@@ -227,6 +289,11 @@ not exist in earlier versions.
 Windows and macOS ship a bundled, checksum-verified Node runtime, so a packaged build has
 no external requirements. Linux is expected to work but has not been exercised, and still
 falls back to the system Node.
+
+This build also supports **system-kernel mode**: point `DSH_KERNEL_BIN` at an
+already-installed `dsh` and the shell drives that instead of the bundled kernel — no
+bundled download, and the kernel version is whatever you have installed. See
+`launcher.systemDsh` and `kernel.homeSubdir` in [`config.json`](config.json).
 
 ## Development
 
