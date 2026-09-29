@@ -36,7 +36,9 @@
     "dist:mac": "npm run prepack:app && electron-builder --mac --publish never",
     "dist:linux": "npm run prepack:app && electron-builder --linux --publish never",
     "dist:linux:deb": "npm run prepack:app && electron-builder --linux deb --publish never",
-    "dist:linux:appimage": "npm run prepack:app && electron-builder --linux AppImage --publish never"
+    "dist:linux:appimage": "npm run prepack:app && electron-builder --linux AppImage --publish never",
+    "doctor": "node tools/doctor.js",
+    "doctor:install": "node tools/doctor.js --install"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
