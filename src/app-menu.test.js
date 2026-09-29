@@ -21,6 +21,7 @@ const noopActions = {
   reload: () => {},
   toggleDevTools: () => {},
   checkForUpdates: () => {},
+  toggleSafeMode: () => {},
 }
 
 /**
