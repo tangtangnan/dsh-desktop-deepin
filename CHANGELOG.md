@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Ports are now always assigned by the OS.** The shell used to prefer `19387`
+  (the official default) and fall back to a free port when it was taken — but
+  the readiness probe kept using the original origin, so it ended up checking
+  *another* dsh instance's kernel. That kernel gates its web surface behind its
+  own per-launch token, the probe carried a different one, every attempt came
+  back 401, and startup failed with "the kernel did not start responding in
+  time" while the real kernel was healthy on the port it had been given. An
+  OS-assigned port makes the collision impossible.
 - **The OS menu bar is kept instead of removed.** `Menu.setApplicationMenu(null)`
   in `createWindow` is replaced by a real menu built by `src/app-menu.js`:
   应用 / 文件 / 编辑 / 视图 / 窗口. The official shell documents that Linux keeps
@@ -16,16 +24,64 @@ All notable changes to this project are documented here. The format follows
   About panel (icon, product name, installed version).
 - **DevTools toggles on F12 and Ctrl+Shift+I**, registered as hidden menu items,
   which is how the official shell exposes them in packaged builds.
+- **The window appears before the kernel starts.** The old order was
+  `await startKernel()` then `createWindow()`, so a cold start meant staring at
+  nothing until the kernel was up. `createWindow` now returns a handle and the
+  endpoint is injected later via `setKernel(origin, token)`; navigation policy,
+  window-open classification and renderer recovery all read a closure, and
+  refuse external navigation entirely until the origin is known.
+- **The loading page advances in place.** Each stage change used to call
+  `loadURL`, which rebuilt the document: the elapsed counter reset and the early
+  stages flashed by unreadably. `src/loading-page.js` now exposes
+  `window.__dshStage()` / `window.__dshLog()` and the main process updates the
+  text. Its inline script also needed `script-src 'unsafe-inline'` in the page's
+  CSP — without it the hooks were never defined and every update was silently
+  dropped.
+- **`kernel.homeSubdir` accepts `~`.** `path.isAbsolute('~/.dsh')` is `false`, so
+  the value was treated as relative and joined onto `userData`, producing a
+  literal directory named `~`. The kernel then started against an empty home and
+  none of the user's plugins loaded.
+- **`supervisor.readinessTimeoutMs` is actually read.** It was documented but
+  never passed to `waitForReady`, so the hard-coded 90 s always won. Measured
+  startup on this machine ranges 45–120+ s (plugins and MCP servers initialise
+  serially), so the value is now 240 s and genuinely applied.
+- **The packaging step no longer fetches the kernel or Node.** Both are obtained
+  at run time by the user's machine instead, which is what keeps the deb near
+  1 MB.
 
 ### Added
 
+- `src/runtime-doctor.js` / `src/runtime-install.js` / `tools/doctor.js` —
+  runtime discovery and acquisition. Detection tries the configured path, then
+  `PATH`, then conventional locations. Missing pieces download from China
+  mirrors first (`npmmirror.com`, `mirrors.huaweicloud.com`) into
+  `~/.dsh-desktop/runtime`, with the Node archive checked against the published
+  SHA-256, the destination written via a `.partial` rename, and the resolved
+  paths written back to `config.json` (backed up first). Exposed as
+  `npm run doctor` and `npm run doctor:install`.
+- `tools/bootstrap.sh` — the same checks in **pure shell**, deliberately. Its job
+  is to find Node and install it when absent, so it cannot itself require Node:
+  that would be a bootstrap cycle. It uses only bash plus curl/wget and
+  tar/unzip, all of which a Debian/UOS base system has. Modes: `check`,
+  `install`, `run`.
+- `src/app-menu.js` — the application menu, including the About panel.
+- `src/safe-mode.js` — starts the kernel with the user's third-party bundles
+  disabled and sets their patch layer aside (`cordis.patch.yml` →
+  `cordis.patch.yml.bak-<UTC>`), following the official recovery mechanism.
+  Deliberately **not persisted**: it is a recovery action, so a normal restart
+  brings the plugins back. Reachable from the tray, the application menu and the
+  in-page controls.
+- `src/desktop-commands.js` — the allowlist of desktop actions the in-page
+  controls may request, plus the state pushed back to the page. A page sends an
+  action *name* only; anything not on the list is refused.
+- `plugins/dsh-deepin-controls` — a floating 桌面工具 panel inside the web UI
+  mirroring the tray's actions, mounted through the kernel's
+  `dsh.bundle.patch` mechanism.
 - `src/directory-picker.js` — decides whether the native folder dialog can be
   used. The official shell falls back to browse mode when Linux has neither
   `zenity` nor `kdialog`, since Electron's native dialog shells out to one of
   them and silently does nothing without it. The probe is a pure function; the
   result feeds `buildShellPatch({ useBrowseDirectoryPicker })`.
-- `kernel.directoryPicker` in `config.json` (`auto` / `browse` / `native`) pins
-  the choice for debugging.
 - `src/config-file.js` — `atomicWriteFile` (write a sibling temp file, rename
   over the target) and `withFileLock` (an advisory `<target>.lock` directory,
   broken when stale). Two files this shell writes used to be written with a
@@ -52,10 +108,39 @@ All notable changes to this project are documented here. The format follows
   over a private IPC channel belonging to its private Desktop Host package.
   This shell has no such channel, so it cannot know exactly, and defaults to
   always asking instead of pretending otherwise.
-- The kernel now prefers port `19387`, the official default, falling back to a
-  free port when it is taken.
+- `kernel.directoryPicker` (`auto` / `browse` / `native`) and
+  `kernel.exitPolicy` (`ask-always` / `ask-if-busy` / `never`) in `config.json`.
+- `splashMinMs` — a floor on how long the loading page stays up after the kernel
+  is ready, so its log pane can actually be read (`0` disables it).
 - Window geometry is remembered across launches, and every write of a shell
   configuration file is atomic and lock-protected.
+
+### Fixed
+
+- **`KernelSupervisor` methods were called on a `KernelProcess`.** The tray's
+  "restart kernel" item did nothing: `restartKernel` assigned the process
+  returned by `restart()` back into the `kernel` variable, so the next restart
+  called `restart()` on an object that has no such method, and the throw was
+  swallowed by a bare `catch`. `restart()` and `markReady()` live on the
+  supervisor; `isRunning()`, `webToken()` and `args` live on the process.
+- **The restart probe did not carry the launch token**, so in system-kernel mode
+  every probe after a restart came back 401 and the window sat on "waiting for
+  the kernel" forever. The restart path now uses the same probe as the first
+  launch.
+- **`tray.notify` did not exist.** The completion notification threw into the
+  preload's `try/catch` every time, so the feature was silently dead. Implemented
+  with a tray balloon and an Electron `Notification` fallback.
+- **`kernel.logText()` was called on the supervisor**, which has no such method;
+  it lives on the process (`kernel.current`). A startup failure raised a second
+  error while reporting the first.
+- **`globalShortcut` was referenced without being loaded.** `tray.js` reaches
+  Electron through `loadElectron()` on purpose (so its pure parts stay testable
+  under plain Node); that one call site used the bare global, so the summon
+  shortcut never registered.
+- `src/loading-page.js` and `src/error-page` CSP now both allow their inline
+  scripts.
+- Type checking is clean across the whole repository, which is how the five bugs
+  above were found: they had all been dismissed as pre-existing noise.
 
 ## [0.1.2] — 2026-08-14
 
