@@ -51,6 +51,19 @@ const here = dirname(fileURLToPath(import.meta.url))
 // stale kernel holding 19387 does not stop this launch.
 const DEFAULT_PORT = 19387
 
+/**
+ * The shortest time the loading page stays up after the kernel is ready.
+ *
+ * Without a floor, a fast kernel makes the page flash by: the log fills in and
+ * is gone before it can be read, which defeats the point of showing it. Three
+ * seconds is long enough to read a few lines and short enough not to feel like
+ * a delay. A `splashMinMs` value in config.json overrides it; 0 disables the
+ * floor entirely.
+ *
+ * @type {number}
+ */
+const DEFAULT_SPLASH_MIN_MS = 3_000
+
 // Renderer self-healing bounds: a few reloads inside a short window is a
 // transient renderer death; more than that is a page that will not load, and
 // reloading it forever only hides that. Both come from config.json.
@@ -850,11 +863,21 @@ function createWindow() {
    *
    * @param {string} nextOrigin
    * @param {string | null} nextToken
-   * @returns {void}
+   * @returns {Promise<void>}
    */
-  const setKernel = (nextOrigin, nextToken) => {
+  const setKernel = async (nextOrigin, nextToken) => {
     origin = nextOrigin
     token = nextToken
+
+    // Hold the loading page long enough to be read. The kernel is often ready
+    // in a few seconds, and switching the moment it is would make the log pane
+    // — the whole point of this screen — a flicker.
+    const minimum = Number(getConfig()?.splashMinMs ?? DEFAULT_SPLASH_MIN_MS)
+    if (Number.isFinite(minimum) && minimum > 0 && startupBeganAt > 0) {
+      const remaining = minimum - (Date.now() - startupBeganAt)
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))
+    }
+
     if (window.isDestroyed()) return
     void window.loadURL(tokenised(`${origin}/`, token))
   }
@@ -1178,7 +1201,7 @@ if (!app.requestSingleInstanceLock()) {
       // through the supervisor's `onState` callback, which swaps the loading
       // page's stage text as the kernel moves through launch → waiting.
       const { origin, token } = await startKernel()
-      window_.setKernel(origin, token)
+      await window_.setKernel(origin, token)
 
       // The IPC channel from the locked-down preload. The renderer can only
       // call `shell.notify`; everything else in the kernel web UI has no
