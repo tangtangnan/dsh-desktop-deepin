@@ -1,0 +1,353 @@
+/**
+ * System tray integration: hide-to-tray, click-to-toggle, a live status line,
+ * a kernel-restart item, a launch-at-login toggle, a global summon shortcut,
+ * a balance/recharge shortcut, and a check-for-updates item.
+ *
+ * Modeled on the official dsh-desktop shell's tray, which shows far more than
+ * a single "quit" — the most useful additions are the live state line (so the
+ * tray tells you the kernel is starting / ready / retrying / crashed without
+ * you opening the window) and the restart item (so a stuck kernel is one click
+ * away from a fresh launch).
+ *
+ * @module tray
+ */
+
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+
+// `electron` is reached lazily through `createRequire`, so plain-Node unit
+// tests can import this module without Electron being present. Module-scope
+// `import { Tray } from 'electron'` would throw synchronously outside the
+// Electron runtime, because Electron's main module is a native binding that
+// only resolves inside it.
+const nodeRequire = createRequire(import.meta.url)
+const loadElectron = () => nodeRequire('electron')
+
+/**
+ * Resolves the app icon path relative to `here` (the directory of the calling
+ * module, set by `main.js`). Used for the window and as the tray fallback.
+ *
+ * @param {string} here - directory of the calling module, e.g. `.../src`
+ * @returns {string}
+ */
+export function trayIconPath(here) {
+  return join(here, '..', 'assets', 'icon.png')
+}
+
+/**
+ * Resolves a dedicated tray icon — a small image meant specifically for the
+ * system tray, not the 512px app icon. Falls back to the app icon when the
+ * dedicated asset is absent, so a tray is always visible. On macOS the image
+ * is marked as a template so the OS recolours it for light and dark menu bars.
+ *
+ * @param {string} here - directory of the calling module, e.g. `.../src`
+ * @returns {string}
+ */
+export function trayTemplateIconPath(here) {
+  const template = join(here, '..', 'assets', 'trayTemplate.png')
+  return existsSync(template) ? template : trayIconPath(here)
+}
+
+/**
+ * The kernel phases the tray status line renders.
+ *
+ * @typedef {'starting' | 'ready' | 'crashed'} KernelPhase
+ * @typedef {object} KernelState
+ * @property {KernelPhase} phase
+ * @property {'launching' | 'waiting-for-ready' | 'retrying'} [stage]
+ * @property {number} [attempts]
+ * @property {number} [retryDelayMs]
+ */
+
+const SUMMON_ACCELERATOR = 'CommandOrControl+Shift+Space'
+// The recharge URL and summon shortcut can be overridden through config.json.
+// config.js is pure fs/path, so this import is safe under plain Node too.
+let RECHARGE_URL = 'https://platform.deepseek.com/top_up'
+try {
+  const trayConf = (await import('./config.js')).getConfig().tray
+  RECHARGE_URL = trayConf.rechargeUrl ?? RECHARGE_URL
+} catch { /* keep default */ }
+
+export class ShellTray {
+  /** @type {import('electron').Tray | null} */
+  #tray = null
+  /** @type {import('electron').BrowserWindow | null} */
+  #window = null
+  /** @type {() => void} */
+  #focus = () => {}
+  /** @type {() => void} */
+  #quit = () => {}
+  #isQuitting = false
+  #isWindowVisible = false
+  /** @type {Set<(visible: boolean) => void>} */
+  #visibilityListeners = new Set()
+
+  // New state the upgraded tray carries. Each is optional; when absent the
+  // matching menu item simply hides or disables.
+  /** @type {KernelState | null} */
+  #kernelState = null
+  /** @type {() => void} */
+  #onRestart = () => {}
+  /** @type {() => void} */
+  #onCheckUpdates = () => {}
+  /** @type {() => void} */
+  #onToggleLaunchAtLogin = () => {}
+  /** @type {boolean} */
+  #launchAtLogin = false
+  /** @type {string | null} */
+  #balance = null
+  /** @type {boolean} */
+  #shortcutRegistered = false
+
+  /**
+   * @param {object} options
+   * @param {string} options.iconPath - a tray-sized icon
+   * @param {import('electron').BrowserWindow} options.window
+   * @param {() => void} options.onShow - restore and focus the window
+   * @param {() => void} options.onQuit - tear down everything and exit
+   * @param {(state: KernelState) => void} [options.onState] - status callback
+   * @param {() => void} [options.onRestart] - restart the kernel
+   * @param {() => void} [options.onCheckUpdates] - check for updates
+   * @param {() => void} [options.onToggleLaunchAtLogin] - toggle autostart
+   * @param {boolean} [options.launchAtLogin] - whether autostart is on
+   * @param {string | null} [options.balance] - balance string to show, or null
+   * @returns {void}
+   */
+  attach({ iconPath, window, onShow, onQuit, onState, onRestart, onCheckUpdates, onToggleLaunchAtLogin, launchAtLogin = false, balance = null }) {
+    if (this.#tray !== null) return
+    if (!existsSync(iconPath)) {
+      throw new Error(`tray icon missing: ${iconPath}`)
+    }
+    this.#window = window
+    this.#focus = onShow
+    this.#quit = onQuit
+    this.#onRestart = onRestart ?? (() => {})
+    this.#onCheckUpdates = onCheckUpdates ?? (() => {})
+    this.#onToggleLaunchAtLogin = onToggleLaunchAtLogin ?? (() => {})
+    this.#launchAtLogin = launchAtLogin
+    this.#balance = balance
+    if (typeof onState === 'function') onState(this.#kernelState ?? { phase: 'starting', stage: 'launching' })
+
+    const { Tray, nativeImage } = loadElectron()
+    const tray = new Tray(iconPath)
+
+    // A template image is recoloured by the OS for light/dark menu bars (macOS);
+    // on other platforms Electron ignores the flag but the dedicated asset still
+    // renders cleaner in the tray than the full app icon.
+    const image = nativeImage.createFromPath(iconPath)
+    if (process.platform === 'darwin') image.setTemplateImage(true)
+    tray.setImage(image)
+
+    tray.setToolTip('DeepSeek Harness 桌面端')
+    tray.on('click', () => this.#onClick())
+    tray.on('double-click', () => this.#focus())
+    tray.setContextMenu(this.#buildMenu())
+    this.#tray = tray
+
+    // Global shortcut: summon the window from anywhere. Registered best-effort
+    // — if the accelerator is taken, the tray simply has no shortcut.
+    this.#registerShortcut()
+
+    window.on('show', () => this.#setVisible(true))
+    window.on('hide', () => this.#setVisible(false))
+  }
+
+  /**
+   * Sets the flag that tells the window-close handler to allow close (rather
+   * than hiding). Called from `before-quit` so an explicit Quit always wins.
+   *
+   * @returns {void}
+   */
+  prepareQuit() {
+    this.#isQuitting = true
+  }
+
+  /**
+   * Whether the shell is currently shutting down. Read by the window-close
+   * handler in `main.js`.
+   *
+   * @returns {boolean}
+   */
+  get isQuitting() {
+    return this.#isQuitting
+  }
+
+  /**
+   * Whether the window is currently visible. Read by the close handler so
+   * closing an already-hidden window can be passed through to the OS.
+   *
+   * @returns {boolean}
+   */
+  get isWindowVisible() {
+    return this.#isWindowVisible
+  }
+
+  /** @returns {void} */
+  #registerShortcut() {
+    try {
+      this.#shortcutRegistered = globalShortcut.register(SUMMON_ACCELERATOR, () => this.#focus())
+    } catch {
+      this.#shortcutRegistered = false
+    }
+  }
+
+  /** @returns {void} */
+  destroy() {
+    const { globalShortcut } = loadElectron()
+    try { globalShortcut.unregister(SUMMON_ACCELERATOR) } catch { /* ignore */ }
+    this.#tray?.destroy()
+    this.#tray = null
+  }
+
+  /**
+   * Updates the live kernel state and refreshes the tray menu (so the status
+   * line tracks starting / ready / retrying / crashed without opening a window).
+   *
+   * @param {KernelState} state
+   * @returns {void}
+   */
+  setState(state) {
+    this.#kernelState = state
+    this.#refreshMenu()
+  }
+
+  /**
+   * Updates the balance string shown (and used as the recharge shortcut).
+   *
+   * @param {string | null} balance
+   * @returns {void}
+   */
+  setBalance(balance) {
+    this.#balance = balance
+    this.#refreshMenu()
+  }
+
+  /**
+   * Updates the launch-at-login flag and refreshes the checkbox.
+   *
+   * @param {boolean} enabled
+   * @returns {void}
+   */
+  setLaunchAtLogin(enabled) {
+    this.#launchAtLogin = enabled
+    this.#refreshMenu()
+  }
+
+  /** @returns {void} */
+  #refreshMenu() {
+    if (this.#tray === null) return
+    this.#tray.setContextMenu(this.#buildMenu())
+  }
+
+  /** @returns {string} the status line for the current kernel state */
+  #statusLabel() {
+    const state = this.#kernelState
+    if (state === null) return '内核启动中…'
+    if (state.phase === 'ready') return '内核运行中'
+    if (state.phase === 'crashed') return `自动恢复已暂停（已尝试 ${state.attempts ?? '?'} 次）`
+    if (state.phase === 'starting' && state.stage === 'retrying') {
+      const secs = Math.ceil((state.retryDelayMs ?? 0) / 1000)
+      return `${secs} 秒后重试…`
+    }
+    if (state.phase === 'starting' && state.stage === 'waiting-for-ready') return '等待内核就绪…'
+    if (state.phase === 'starting' && state.stage === 'launching') return '正在启动内核…'
+    return '内核启动中…'
+  }
+
+  /**
+   * @returns {import('electron').Menu}
+   */
+  #buildMenu() {
+    const { Menu } = loadElectron()
+    const canRestart = this.#kernelState?.phase === 'crashed' || this.#kernelState?.phase === 'ready'
+
+    const items = [
+      {
+        label: this.#isWindowVisible ? '隐藏窗口' : '显示窗口',
+        click: () => (this.#isWindowVisible ? this.#hide() : this.#focus()),
+      },
+      {
+        label: '快捷召唤',
+        accelerator: SUMMON_ACCELERATOR,
+        click: () => this.#focus(),
+      },
+      {
+        label: this.#shortcutRegistered ? `快捷键：${SUMMON_ACCELERATOR}` : '快捷键不可用',
+        enabled: false,
+      },
+      {
+        label: this.#launchAtLogin ? '开机自启：开' : '开机自启：关',
+        type: 'checkbox',
+        checked: this.#launchAtLogin,
+        click: () => this.#onToggleLaunchAtLogin(),
+      },
+      { type: 'separator' },
+      { label: this.#statusLabel(), enabled: false },
+      {
+        label: this.#kernelState?.phase === 'crashed' ? '启动内核' : '重启内核',
+        enabled: canRestart,
+        click: () => this.#onRestart(),
+      },
+    ]
+
+    if (this.#balance !== null) {
+      items.push({
+        label: `余额：${this.#balance}`,
+        click: () => loadElectron().shell.openExternal(RECHARGE_URL),
+      })
+    }
+
+    items.push(
+      { type: 'separator' },
+      { label: '检查更新…', click: () => this.#onCheckUpdates() },
+      { type: 'separator' },
+      { label: '退出', click: () => this.#quit() },
+    )
+
+    return Menu.buildFromTemplate(items)
+  }
+
+  /** @returns {void} */
+  #onClick() {
+    if (this.#isWindowVisible) this.#hide()
+    else this.#focus()
+  }
+
+  /**
+   * @param {boolean} visible
+   * @returns {void}
+   */
+  #setVisible(visible) {
+    if (this.#isWindowVisible === visible) return
+    this.#isWindowVisible = visible
+    if (visible) this.#broadcast(true)
+    else this.#broadcast(false)
+  }
+
+  /**
+   * Registers a listener fired when the window's visibility changes.
+   *
+   * @param {(visible: boolean) => void} listener
+   * @returns {() => void} unsubscribe
+   */
+  onVisibilityChange(listener) {
+    this.#visibilityListeners.add(listener)
+    return () => this.#visibilityListeners.delete(listener)
+  }
+
+  /** @returns {void} */
+  #hide() {
+    this.#window?.hide()
+  }
+
+  /**
+   * @param {boolean} visible
+   * @returns {void}
+   */
+  #broadcast(visible) {
+    for (const listener of this.#visibilityListeners) {
+      try { listener(visible) } catch { /* ignore listener errors */ }
+    }
+  }
+}
