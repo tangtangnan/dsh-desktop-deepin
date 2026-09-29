@@ -31,6 +31,8 @@ import { captureWindowState, fitWindowState } from './window-state.js'
 import { resolveBindings, shortcutDeliveryMode, validateBindings } from './shortcuts.js'
 import { exitConfirmCopy, shouldConfirmExit } from './exit-guard.js'
 import { isDesktopAction, toDesktopState } from './desktop-commands.js'
+import { hasSafeModeTargets, nextBackupPath, safeModeTargets, toDisablePatch } from './safe-mode.js'
+import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
@@ -80,6 +82,17 @@ let kernelBusy = false
  * @type {Record<string, string>}
  */
 let windowShortcutBindings = {}
+/**
+ * Whether the next kernel launch should skip the user's third-party bundles.
+ *
+ * Set by the tray, the menu or the in-page controls, and consumed by
+ * `startKernel` on the next launch. Persisted nowhere: Safe Mode is a recovery
+ * action, not a preference — a user who restarts normally should get their
+ * plugins back unless they ask for Safe Mode again.
+ *
+ * @type {boolean}
+ */
+let safeMode = false
 
 /**
  * Where the bundled kernel lives, packaged or not.
@@ -279,6 +292,79 @@ async function ensureShippedPlugins(dshHome, shippedRoot) {
 }
 
 /**
+ * Builds the Safe Mode disable overlay and sets the user's patch layer aside.
+ *
+ * The overlay is a `--patch` file of `{ id, disabled: true }` rows — the same
+ * disable mechanism the shell already uses, and the one the official shell
+ * documents for its recovery action. The user's own patch file is renamed
+ * rather than edited, so nothing they wrote is lost and the file can be put
+ * back by hand.
+ *
+ * A profile with no third-party bundles has nothing to disable; that is not an
+ * error, and no overlay is written.
+ *
+ * @param {string} dshHome - the kernel home the profile lives under
+ * @returns {Promise<string | null>} the overlay path, or null when there is
+ *   nothing to disable
+ */
+async function buildSafeModePatch(dshHome) {
+  const profileDir = join(dshHome, 'profiles', getConfig().kernel.profile || 'web')
+  const manifestPath = join(profileDir, 'package.json')
+
+  let manifest = null
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  } catch {
+    console.warn('safe mode: profile manifest unreadable, starting without changes')
+    return null
+  }
+
+  if (!hasSafeModeTargets(manifest)) {
+    console.log('safe mode: no third-party bundles to disable')
+    return null
+  }
+
+  // Set the user's patch layer aside before disabling anything, so a recovery
+  // never destroys the configuration it is recovering from.
+  const userPatch = join(profileDir, 'cordis.patch.yml')
+  if (existsSync(userPatch)) {
+    try {
+      const target = nextBackupPath(userPatch, (candidate) => existsSync(candidate))
+      await rename(userPatch, target)
+      console.log(`safe mode: profile patch moved to ${target}`)
+    } catch (error) {
+      console.warn(
+        `safe mode: could not back up the profile patch (${error instanceof Error ? error.message : String(error)}); continuing`,
+      )
+    }
+  }
+
+  const overlay = toDisablePatch(safeModeTargets(manifest))
+  const overlayPath = join(app.getPath('userData'), 'safe-mode.patch.yml')
+  await writeConfigFile(overlayPath, serialisePatch(overlay))
+  console.log(`safe mode: disabling ${overlay.length} third-party bundle(s)`)
+  return overlayPath
+}
+
+/**
+ * Toggles Safe Mode and restarts the kernel so it takes effect.
+ *
+ * Safe Mode is deliberately not persisted: it is a recovery action, and a
+ * normal restart should give the user their plugins back unless they ask for
+ * Safe Mode again. Storing it would mean a shell that silently stays
+ * degraded — which is the failure it exists to escape.
+ *
+ * @returns {Promise<void>}
+ */
+async function toggleSafeMode() {
+  safeMode = !safeMode
+  console.log(`safe mode: ${safeMode ? 'on' : 'off'}`)
+  tray?.setSafeMode(safeMode)
+  await restartKernel()
+  await pushDesktopState()
+}
+
+/**
  * The port to launch on: the official default when it is free, otherwise any
  * free port.
  *
@@ -391,8 +477,17 @@ async function startKernel() {
   const patchFiles = []
   if (patchEntries.length > 0) {
     const patchPath = join(app.getPath('userData'), 'shell.patch.yml')
-    await writeFile(patchPath, serialisePatch(patchEntries), 'utf8')
+    await writeConfigFile(patchPath, serialisePatch(patchEntries))
     patchFiles.push(patchPath)
+  }
+
+  // Safe Mode: start without the user's third-party bundles, and set their
+  // patch layer aside. This is the way out of a plugin that crashes the kernel
+  // at load time — a shell that cannot start cannot be told to remove the
+  // plugin, so the next launch has to be able to start without it.
+  if (safeMode) {
+    const safePath = await buildSafeModePatch(dshHome)
+    if (safePath !== null) patchFiles.push(safePath)
   }
 
   // The kernel is supervised rather than spawned once: if it exits after the
@@ -559,9 +654,10 @@ function installApplicationMenu(window) {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(
       buildAppMenuTemplate(
-        { platform: process.platform, appName: 'DeepSeek Harness' },
+        { platform: process.platform, appName: 'DeepSeek Harness', safeMode },
         {
           showAbout: () => app.showAboutPanel(),
+          toggleSafeMode: () => void toggleSafeMode(),
           quit: () => void requestQuit(),
           closeWindow: () => {
             if (window.isDestroyed()) return
@@ -950,6 +1046,8 @@ if (!app.requestSingleInstanceLock()) {
         onRestart: () => void restartKernel(),
         onCheckUpdates: () => void checkForUpdates(),
         onToggleLaunchAtLogin: () => toggleLaunchAtLogin(),
+        onToggleSafeMode: () => void toggleSafeMode(),
+        safeMode,
         launchAtLogin: app.getLoginItemSettings().openAtLogin,
       })
 
@@ -1025,6 +1123,7 @@ async function pushDesktopState() {
     kernelState,
     busy: kernelBusy,
     launchAtLogin: app.getLoginItemSettings().openAtLogin,
+    safeMode,
   })
   mainWindow.webContents.send('shell:state', state)
 }
@@ -1049,6 +1148,9 @@ async function runDesktopAction(action) {
       break
     case 'toggle-launch-at-login':
       toggleLaunchAtLogin()
+      break
+    case 'toggle-safe-mode':
+      await toggleSafeMode()
       break
     case 'show-about':
       app.showAboutPanel()
