@@ -16,7 +16,7 @@ import {
 describe('isDesktopAction', () => {
   it('accepts every declared action', () => {
     for (const action of Object.keys(DESKTOP_ACTIONS)) {
-      assert.equal(isDesktopAction(action), true, action)
+      assert.equal(isDesktopAction(action), true, String(action))
     }
   })
 
@@ -39,8 +39,9 @@ describe('needsConfirmation', () => {
   })
 
   it('does not nag for the harmless actions', () => {
-    for (const action of ['restart-kernel', 'check-updates', 'show-about', 'hide-window']) {
-      assert.equal(needsConfirmation(action), false, action)
+    const harmless = ['restart-kernel', 'check-updates', 'show-about', 'hide-window', 'toggle-safe-mode']
+    for (const action of harmless) {
+      assert.equal(needsConfirmation(/** @type {any} */ (action)), false, action)
     }
   })
 })
@@ -58,12 +59,12 @@ describe('toDesktopState', () => {
 
   it('collapses anything unknown to starting', () => {
     for (const phase of [undefined, 'nonsense', '']) {
-      assert.equal(toDesktopState({ kernelState: { phase } }).phase, 'starting')
+      assert.equal(toDesktopState({ kernelState: /** @type {any} */ ({ phase }) }).phase, 'starting')
     }
   })
 
   it('handles no kernel state at all', () => {
-    assert.deepEqual(toDesktopState(), { phase: 'starting', busy: false, launchAtLogin: false })
+    assert.deepEqual(toDesktopState(), { phase: 'starting', busy: false, launchAtLogin: false, safeMode: false })
   })
 
   it('passes through the retry delay the status line needs', () => {
@@ -76,13 +77,13 @@ describe('toDesktopState', () => {
 
   it('never leaks a URL or a log line, even if one is on the state', () => {
     const state = toDesktopState({
-      kernelState: {
+      kernelState: /** @type {any} */ ({
         phase: 'ready',
         url: 'http://127.0.0.1:19387/?token=secret',
         logText: 'a secret line',
-      },
+      }),
     })
-    assert.deepEqual(Object.keys(state).sort(), ['busy', 'launchAtLogin', 'phase'])
+    assert.deepEqual(Object.keys(state).sort(), ['busy', 'launchAtLogin', 'phase', 'safeMode'])
     assert.equal(JSON.stringify(state).includes('secret'), false)
   })
 })
