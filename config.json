@@ -1,6 +1,5 @@
 {
   "_comment": "DSH 社区壳配置。改这里，不用动代码。路径用绝对路径；相对路径相对于本配置文件所在目录（即壳根目录）。所有 _comment_* 字段都是说明，代码会自动忽略，可随意删。",
-
   "launcher": {
     "_comment": "启动器段：start-shell.sh 读取这里决定如何拉起壳。改路径后 sh 会自动核对存在性。",
     "electron": "/media/wangke/OFFICE/app/openclaw-DSH-electron-app/runtime/electron33/electron",
@@ -14,7 +13,6 @@
     "telemetryMode": "DISABLED",
     "_comment_telemetryMode": "遥测开关，值传给环境变量 DSH_TELEMETRY_MODE。DISABLED 表示关闭内核上报。"
   },
-
   "kernel": {
     "_comment": "内核段：决定 dsh 内核怎么起、DSH_HOME 落在哪。",
     "homeSubdir": "/home/wangke/.dsh",
@@ -28,7 +26,6 @@
     "exitPolicy": "ask-always",
     "_comment_exitPolicy": "退出确认策略。ask-always=每次退出都弹确认框（默认，因本壳无法像官方那样精确问 Host 是否有任务在跑，故取最保守档）；ask-if-busy=仅在页面观察到内核忙时才问（DOM 观察近似，非官方精确查询）；never=直接退出不询问。"
   },
-
   "supervisor": {
     "_comment": "内核守护段：内核崩溃/退出时的自动重启策略（指数退避）。来自官方壳 restart-policy 的复刻。",
     "maxRestartsInWindow": 5,
@@ -42,7 +39,6 @@
     "readinessTimeoutMs": 90000,
     "_comment_readinessTimeoutMs": "单次启动等待内核就绪（打出 dsh web: 行）的超时。超时算这次启动失败、进入重试。"
   },
-
   "renderer": {
     "_comment": "渲染段：Electron 渲染进程（也就是那个 Web 页面）崩溃时的自愈上限。",
     "maxRecoveries": 3,
@@ -50,7 +46,8 @@
     "recoveryWindowMs": 60000,
     "_comment_recoveryWindowMs": "恢复次数计数的滚动窗口（毫秒）。"
   },
-
+  "splashMinMs": 3000,
+  "_comment_splashMinMs": "启动页最短展示时长（毫秒）。内核就绪后，启动页至少再停留这么久，好让你看清内核启动日志；0 表示就绪即切走。默认 3000。",
   "tray": {
     "_comment": "托盘段：系统托盘菜单的行为与文案。",
     "summonAccelerator": "CommandOrControl+Shift+Space",
@@ -60,7 +57,6 @@
     "rechargeUrl": "https://platform.deepseek.com/top_up",
     "_comment_rechargeUrl": "充值页地址。点托盘里的余额/充值行会用浏览器打开它。"
   },
-
   "updates": {
     "_comment": "更新段：自动更新源（electron-updater）。仅在打包版生效，源码运行会提示「打包版才检查」。",
     "enabled": true,
