@@ -9,6 +9,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# 需要 contents: write 才能创建 release 并上传 deb（默认 GITHUB_TOKEN 是只读的，
+# 会导致 "Resource not accessible by integration" 403）。
+permissions:
+  contents: write
+
 jobs:
   package:
     runs-on: ubuntu-latest
