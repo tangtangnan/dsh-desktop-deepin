@@ -69,6 +69,16 @@ const RENDERER_RECOVERY_WINDOW_MS = cfgRenderer.recoveryWindowMs
  * @type {KernelSupervisor | null}
  */
 let kernel = null
+/**
+ * Whether the kernel is driven from an external install (`DSH_KERNEL_BIN`)
+ * rather than the bundled tree.
+ *
+ * Recorded at launch so code that runs *after* startup can reason about it —
+ * `restartKernel` in particular needs it to pick the right readiness probe.
+ *
+ * @type {boolean}
+ */
+let systemKernelMode = false
 /** @type {BrowserWindow | null} */
 let mainWindow = null
 /** @type {ShellTray | null} */
@@ -109,7 +119,7 @@ let safeMode = false
  * `extraResources` places it beside the asar archive rather than inside it: files in an
  * asar cannot be spawned, so a kernel bundled the usual way would fail only once packaged.
  *
- * @returns {{binPath: string, nodePath: string, runElectronAsNode: boolean, root: string}}
+ * @returns {{binPath: string, nodePath: string, runElectronAsNode: boolean, root: string, systemKernel: boolean}}
  */
 function resolveKernelPaths() {
   const root = app.isPackaged ? join(process.resourcesPath, 'kernel') : join(here, '..', 'resources', 'kernel')
@@ -416,6 +426,7 @@ function isPortFree(host, port) {
  */
 async function startKernel() {
   const { binPath, nodePath, runElectronAsNode, root: kernelRoot, systemKernel } = resolveKernelPaths()
+  systemKernelMode = systemKernel
   if (systemKernel) {
     // System-kernel mode: the user's own `dsh` already exists and is installed
     // independently. We must not gate on the bundled resources/kernel tree, nor
@@ -940,10 +951,16 @@ async function restartKernel() {
     }
 
     const origin = kernelOrigin(HOST, port)
+    // The probe must carry the launch's token whenever the kernel gates its web
+    // surface: a bare probe gets a 401, `isServing` rejects it, and the restart
+    // sits on "waiting for the kernel" forever. The first launch already
+    // accounts for this; the restart has to do the same.
+    const probeWithToken = (url, signal) =>
+      httpProbe(tokenised(url, process_.webToken()), signal)
     const readiness = await waitForReady({
       url: `${origin}/`,
       isCurrent: () => process_.isRunning(),
-      probe: httpProbe,
+      probe: systemKernelMode ? probeWithToken : httpProbe,
     })
     if (!readiness.ok) {
       throw new Error(`the restarted kernel never became ready (${readiness.reason})`)
