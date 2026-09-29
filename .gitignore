@@ -1,0 +1,84 @@
+# --- Local agent-network scaffolding (never publish) ---
+.anet/
+.mcp.json
+
+# --- Dependencies ---
+node_modules/
+.pnpm-store/
+
+# --- Kernel payload ---
+# Installed by `npm run kernel:install` from the version pinned in upstream.lock.json,
+# which is the thing under version control. The tree itself is a build artefact.
+resources/kernel/
+
+# --- Build output ---
+# electron-builder writes the unpacked Linux dir, the .deb, the .AppImage, and
+# debug files into release/. `out/` and `dist/` are conventional names other
+# build steps might use.
+out/
+dist/
+build/
+release/
+release-unpacked/
+linux-unpacked/
+*.tsbuildinfo
+
+# --- electron-builder / Electron cache ---
+# Downloaded Electron zips, fpm binaries, and 7zip are reused between builds but
+# should not enter the source tree.
+electron-builder-cache/
+*.AppImage
+*.deb
+*.rpm
+*.snap
+*.snap.*
+builder-debug.yml
+builder-effective-config.yaml
+latest-linux.yml
+latest.yml
+nsis/
+
+# --- Temporary files from the build / verification run ---
+# Anything left in /tmp-style scratch locations of the project root.
+tmp/
+scratch/
+.cache/
+.tmp/
+*.tmp
+*.temp
+.cache-*
+*.tgz
+*.tar.gz
+*.zip
+*.bak
+*.orig
+*.rej
+
+# --- Environment & secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Test & coverage ---
+coverage/
+.vitest/
+
+# --- Editor / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+
+# --- TypeScript / prebuilt binary detritus ---
+.tsbuildinfo
+.tsdown-cache/
+*.tsbuildinfo
