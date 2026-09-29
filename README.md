@@ -37,6 +37,58 @@
 | `*.deb` | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 装到 `/opt`，注册启动器与图标 |
 | `*.AppImage` | 任意 Linux x86_64 | 免安装，赋可执行权限直接跑 |
 
+### 安装包只有约 1 MB——因为运行时按需获取
+
+**这一点必须在安装前知道：首次启动会下载 Electron（约 180 MB），需要等几分钟。**
+
+这个 deb 里**只有壳的代码**，不含 Electron、Node 与 dsh 内核。原因很直接：
+
+| 组件 | 单独体积 | 为什么不打包 |
+|---|---|---|
+| Electron 运行时 | 约 364 MB | **包体积的主要来源**，占了原本 250 MB 安装包的绝大部分 |
+| Node 运行时 | 约 25 MB | 你机器上多半已经有了，内核可以直接用系统的 |
+| dsh 内核 | 约 30 MB | 同上；而且内核升级频繁，打进包会很快过时 |
+
+把这三样打进去，安装包会从 **1 MB 膨胀到 250 MB 以上**，而其中 90% 的内容对
+「已经装过 dsh 的机器」是重复的。所以本包采取按需获取：
+
+```sh
+# 装完后首次启动前，先跑一次自检（会告诉你要不要下载）
+bash /opt/deepseek-harness-desktop/tools/bootstrap.sh check
+
+# 缺什么就下什么，国内镜像优先
+bash /opt/deepseek-harness-desktop/tools/bootstrap.sh install
+```
+
+安装器（deb 的 postinst）也会在装完后自动跑一次检测，并在缺失时明确提示你执行上面的命令。
+
+**下载耗时预期**（取决于网络）：
+
+| 缺什么 | 下载量 | 大致耗时 |
+|---|---|---|
+| 只缺 Node | 约 25 MB | 十几秒 |
+| 只缺 dsh 内核 | 约 30 MB | 几十秒 |
+| **只缺 Electron** | **约 180 MB** | **几分钟** ← 最常见的情况 |
+| 三者都缺 | 约 235 MB | 几分钟 |
+
+下载**只发生一次**。全部就绪后会把解析出的绝对路径写回
+`config.json`（备份为 `config.json.bak-bootstrap`），之后每次启动都是零检测、秒开。
+
+下载内容与来源（写入 `~/.dsh-desktop/runtime/`，不碰系统目录、不需要 root）：
+
+| 组件 | 国内源 |
+|---|---|
+| Node | `npmmirror.com/mirrors/node`，备用 `mirrors.huaweicloud.com/nodejs` |
+| Electron | `npmmirror.com/mirrors/electron`，备用 `mirrors.huaweicloud.com/electron` |
+| dsh 内核 | `registry.npmmirror.com`（npm 全局安装） |
+
+> 为什么优先国内源：上游 `nodejs.org`、GitHub Releases 与 `registry.npmjs.org` 在大陆
+> 网络下经常超时或极慢，而上述镜像是同步的完整副本。脚本会在主源失败时自动切备用源。
+
+**想避开首次下载？** 如果你的机器上已经有 Electron ≥ 33、Node ≥ 22.15 和任意可用的
+`dsh`，`bootstrap.sh check` 会全部识别为已就绪，**不会有任何下载**。检测顺序是
+`config.json` 指定路径 → `PATH` → 常见安装位置，命中即复用。
+
 ### 请用 apt 安装 deb，不要用 dpkg -i
 
 `dpkg -i` 不解析依赖，缺库时直接失败。本包声明的运行时依赖：
@@ -62,7 +114,8 @@ sudo apt remove deepseek-harness-desktop
 ```
 
 卸载**不会**动你的内核数据（`~/.dsh` 或 `$DSH_HOME`：会话、设置、凭据、插件），
-只移除应用本体与 Electron 用户数据。
+也不会删 `~/.dsh-desktop/runtime/`（已下载的运行时留着，重装后可直接复用）。
+如要彻底清理，手动删该目录即可。
 
 ---
 
@@ -90,6 +143,38 @@ sudo apt remove deepseek-harness-desktop
 | 退出确认 | `src/exit-guard.js` | 退出前弹确认框，策略见 `kernel.exitPolicy` |
 | 窗口几何记忆 | `src/window-state.js` | 记住尺寸位置；显示器拔掉后不会把窗口丢到屏幕外 |
 | 托盘图标 | `assets/trayTemplate.png` | Linux 任务栏图标 |
+| 桌面通知 | `src/tray.js` `src/dom-observer.js` | agent 完成当前任务时发系统通知 |
+| 运行时自检 | `tools/bootstrap.sh` `src/runtime-doctor.js` | 检测 Electron/Node/dsh 是否就绪，缺了可从国内源自动下载 |
+
+### 启动过程可见
+
+窗口**先出现**，内核在后面启动，全程显示进度——不必对着空白干等：
+
+```
+正在准备启动…            ← 窗口一出现就能看到
+正在启动内核…
+正在等待内核就绪…
+
+已等待 13 秒              ← 逐秒跳动，跨页面切换连续计数
+
+dsh-pocket: auto-restore check        ← 内核实时输出
+[info]: [ 'client ready' ]
+[MCP-Server-Chart] ... tool handlers set up
+12306 MCP Server running on stdio
+dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
+```
+
+实现：`src/loading-page.js` 暴露 `window.__dshStage()` 与 `window.__dshLog()`，主进程
+**原地改文本**而不是换页（换页会重建文档、计时归零、中间态一闪而过）。
+内核输出经脱敏后按 120ms 批推送。
+
+### 端口与内核模式
+
+- **端口由系统分配**，不固定。官方壳固定 19387，本壳曾经也这样——但那会导致：端口被
+  别的 dsh 实例占用时，壳换了端口却仍去探测 19387，探到的是**别人的内核**（token 对不上，
+  永远 401，最后报「内核未响应」而真正的内核活得好好的）。改成系统分配后从根上消除了撞车。
+- **系统内核模式**：`launcher.systemDsh` 指向本机 `dsh`，壳用它作为内核，不下载 bundled 版本。
+- **`~` 展开**：`kernel.homeSubdir` 支持 `~/.dsh` 写法（Node 不认 `~` 是绝对路径，必须显式展开）。
 
 ### 网页内桌面工具
 
@@ -132,45 +217,105 @@ sudo apt remove deepseek-harness-desktop
 
 ## 配置
 
-所有可调项集中在 [`config.json`](config.json)，改它不用动代码。常用项：
+所有可调项集中在 [`config.json`](config.json)，改它不用动代码。每个键旁边都有
+`_comment_*` 中文说明，这里列出常用项：
+
+### `launcher` —— 怎么把壳拉起来
 
 | 键 | 取值 | 说明 |
 |---|---|---|
-| `launcher.systemDsh` | 路径 | 系统 `dsh` 可执行文件 |
-| `launcher.userDataDir` | 路径 | 壳的 userData，日志落这里 |
-| `kernel.homeSubdir` | 路径 | `DSH_HOME`，相对则拼在 userData 下 |
-| `kernel.profile` | `web` 等 | 启动 profile |
-| `kernel.directoryPicker` | `auto`/`browse`/`native` | `auto` 时：Linux 有 zenity 或 kdialog 用原生对话框，都没有则降级浏览模式 |
-| `kernel.exitPolicy` | `ask-always`/`ask-if-busy`/`never` | 退出确认策略，默认最保守 |
-| `supervisor.*` | 数值 | 重启窗口、次数、退避、就绪超时 |
-| `tray.rechargeUrl` | URL | 托盘充值入口（默认不显示） |
+| `electron` | 路径 | Electron 可执行文件。系统内核模式下它就是壳的运行环境，必填 |
+| `systemDsh` | 路径 | 系统 `dsh`。Shell 把它作为 `DSH_KERNEL_BIN` 传给内核，即「系统内核模式」 |
+| `nodeBinDir` | 目录 | 系统 node 所在目录，会被加进 `PATH` 供内核使用 |
+| `userDataDir` | 路径 | 壳的 Electron userData 目录，日志也落这里。相对路径以壳根目录为基准 |
+| `telemetryMode` | `DISABLED` 等 | 传给环境变量 `DSH_TELEMETRY_MODE` |
+
+> `electron` / `systemDsh` / `nodeBinDir` 三项**可以由 `bootstrap.sh install` 自动写入**，
+> 不用手工填。装完 deb 跑一次自检即可。
+
+### `kernel` —— 内核怎么起、数据放哪
+
+| 键 | 取值 | 说明 |
+|---|---|---|
+| `homeSubdir` | 路径 | `DSH_HOME` 的位置。**支持 `~` 展开**（`~/.dsh` → `/home/你/.dsh`）；相对路径则拼在 `userDataDir` 下 |
+| `profile` | `web` 等 | 启动 profile |
+| `noOpen` | `true`/`false` | `true` 表示不让 dsh 自己开浏览器，由壳加载页面 |
+| `directoryPicker` | `auto`/`browse`/`native` | `auto` 时：Linux 上有 zenity 或 kdialog 就用原生对话框，两者都没有则自动降级为浏览模式 |
+| `exitPolicy` | `ask-always`/`ask-if-busy`/`never` | 退出确认策略。默认 `ask-always` 最保守（本壳无法像官方那样精确查询 Host 任务，故取保守档） |
+
+> `homeSubdir` 的 `~` 展开是必须的：Node 的 `path.isAbsolute('~/.dsh')` 返回 **false**，
+> 不展开就会被当成相对路径拼到 `data-shell/` 下，生成一个名字字面叫 `~` 的空目录，
+> 内核会在错误的 home 里启动、看不到你的任何插件。
+
+### `supervisor` —— 内核守护
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `maxRestartsInWindow` | `5` | 滚动窗口内最多重试次数，超出则放弃并报错 |
+| `restartWindowMs` | `600000` | 重试计数的滚动窗口（10 分钟） |
+| `baseDelayMs` | `2000` | 首次重试延迟，之后每次翻倍 |
+| `maxDelayMs` | `30000` | 重试延迟上限 |
+| `readinessTimeoutMs` | `240000` | 单次启动等待内核打出 `dsh web:` 行的超时。**实测本机内核启动耗时在 45~120 秒间波动**（插件与 MCP 服务器串行初始化），原 90 秒不够，故放宽到 240 秒 |
+
+### `renderer` / `tray` / 其他
+
+| 键 | 说明 |
+|---|---|
+| `renderer.maxRecoveries` / `recoveryWindowMs` | 渲染进程崩溃后自动 reload 的次数与窗口（默认 3 次 / 60 秒） |
+| `splashMinMs` | 启动页最短展示时长（默认 3000ms）。内核就绪后至少再停这么久，让你看清启动日志；`0` 表示就绪即切走 |
+| `tray.summonAccelerator` | 全局快捷键，一键召唤/隐藏窗口（默认 `CommandOrControl+Shift+Space`） |
+| `tray.showBalance` / `rechargeUrl` | 是否显示充值入口及其地址 |
+| `updates.*` | 自动更新源（仅打包版生效） |
 
 ---
 
 ## 环境要求
 
-**跑打包版**：无额外要求，内核与 Node 运行时都在包里。
+**跑打包版**：本身无强制要求——缺失的运行时会被自动检测并下载（见上方「下载与安装」）。
+但为了避免首次启动的大下载，机器上最好已有：
 
-**开发**：Node.js ≥ 22.15.0（内核用了 `zlib.createZstdDecompress`）。
+| 组件 | 最低版本 | 说明 |
+|---|---|---|
+| Electron | ≥ 33 | 壳的运行环境。没有会下载约 180 MB |
+| Node | ≥ 22.15 | 内核用了 `zlib.createZstdDecompress`，更早的版本起不来 |
+| dsh 内核 | 任意可运行版本 | 不锁版本，用你已装的 |
 
-**系统内核模式**：需要本机已装 `dsh`，设 `DSH_KERNEL_BIN` 指向它。此模式下不下载
-bundled 内核，内核版本就是你装的那个。
+**开发**：Node.js ≥ 22.15.0。
+
+**系统内核模式**（当前默认）：需要本机已装 `dsh`，`launcher.systemDsh` 指向它。
+此模式下不下载 bundled 内核，内核版本就是你装的那个。
+
+### 自检命令
+
+```sh
+# 只检测，报告缺什么（exit=1 表示有缺失，可用于脚本判断）
+npm run doctor
+bash tools/bootstrap.sh check
+
+# 缺什么下什么，国内源优先，并把解析出的路径写回 config.json
+npm run doctor:install
+bash tools/bootstrap.sh install
+```
+
+`bootstrap.sh` 是**纯 shell** 写的，只依赖 bash + curl/wget + tar/unzip——这几样在
+Debian/UOS 基础系统里必定存在。这是刻意的：它的职责是「检查 Node 在不在并把它装上」，
+如果它自己需要 Node 才能运行，Node 缺失时它根本启动不了，就成了自举死循环。
 
 ---
 
 ## 开发
 
 ```sh
-npm install              # 壳依赖（Electron、builder、类型）
-npm test                 # 单元测试，184 个，不联网、不需要 Electron
+npm install              # 壳依赖（electron-builder、类型）
+npm test                 # 单元测试 224 个，不联网、不需要 Electron
 npm run typecheck        # tsc --noEmit
-npm run kernel:install   # 按 upstream.lock.json 下载并校验内核
+npm run doctor           # 运行时自检：Electron / Node / dsh 就绪情况
 npm start                # 启动
 ```
 
 ### 打包
 
-打包**不是自动的**——GitHub Actions 只是执行器，得由 workflow 驱动。本仓库有三个：
+打包**不是自动的**——GitHub Actions 只是 CI 执行器，得由 workflow 驱动。本仓库有三个：
 
 | workflow | 触发 | 作用 |
 |---|---|---|
@@ -187,11 +332,13 @@ gh workflow run package-linux.yml --repo westanke/dsh-desktop-deepin
 本地打包：
 
 ```sh
-npm ci && npm test && npm run kernel:install
+npm ci && npm test
 npx electron-builder --linux deb --linux AppImage --publish never
 ```
 
-产物在 `release/`。
+产物在 `release/`。**本地打包不会下载内核或 Node**——这两样由最终用户运行时按需获取
+（见「下载与安装」）。Electron 由 electron-builder 打进 deb，它复用 `~/.cache/electron`
+里已有的缓存，只在缓存缺失时才下载。
 
 ### 模块布局
 
@@ -211,10 +358,16 @@ npx electron-builder --linux deb --linux AppImage --publish never
 | `src/diagnostics.js` | 崩溃报告写哪、留几份 |
 | `src/config-file.js` | 配置如何写才不撕裂 |
 | `src/desktop-commands.js` | 网页能请求哪些桌面动作 |
+| `src/runtime-doctor.js` | Electron/Node/dsh 在不在、版本够不够 |
+| `src/runtime-install.js` | 缺的东西从哪下、怎么校验 |
 
 其余模块（`main.js`、`tray.js`、`kernel-*.js`、`preload.js`、`dom-observer.js`、
 `loading-page.js`、`update.js`、`log-redact.js`、`node-runtime.js`、`shell-patch.js`）
 负责 Electron 与进程 IO。
+
+**纯 shell 例外**：`tools/bootstrap.sh` 刻意不用 Node 写。它负责「检查 Node 在不在并把它装上」，
+如果它自己依赖 Node，Node 缺失时就启动不了——自举死循环。所以只用
+bash + curl/wget + tar/unzip，这三样在 Debian/UOS 基础系统里必定存在。
 
 ---
 
