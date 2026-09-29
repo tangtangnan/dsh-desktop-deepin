@@ -1,0 +1,5 @@
+# Mount the browser half only in the shell's Web profile.
+# Mirrors dsh-desktop-controls: a bundle patch that inserts one entry.
+- insert:
+    - id: deepin-controls
+      name: 'dsh-deepin-controls'
