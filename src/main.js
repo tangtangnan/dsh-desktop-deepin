@@ -298,9 +298,11 @@ async function ensureShippedPlugins(dshHome, shippedRoot) {
   manifest.dsh.profile = manifest.dsh.profile ?? {}
   manifest.dsh.profile.bundles = manifest.dsh.profile.bundles ?? [...WEB_PROFILE_TEMPLATE]
 
+  /** @type {Record<string, string>} */
+  const dependencies = manifest.dependencies
   for (const name of missing) {
     const source = join(shippedRoot, name)
-    manifest.dependencies[name] = `file:${source}`
+    dependencies[name] = `file:${source}`
     if (!manifest.dsh.profile.bundles.includes(name)) {
       manifest.dsh.profile.bundles.push(name)
     }
@@ -421,7 +423,7 @@ function isPortFree(host, port) {
 /**
  * Starts the kernel and waits until it is genuinely serving.
  *
- * @returns {Promise<{origin: string}>}
+ * @returns {Promise<{origin: string, token: string | null}>}
  * @throws when the kernel cannot be started or never becomes ready
  */
 async function startKernel() {
@@ -528,6 +530,7 @@ async function startKernel() {
       if (stage === undefined) return
       void mainWindow.loadURL(loadingPageHtml({ stage, retryDelayMs: state.retryDelayMs ?? 0 }))
     },
+    /** @returns {Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
     launchSpec: async () => {
       const port = await preferredPort(HOST)
       return {
@@ -586,6 +589,7 @@ async function startKernel() {
   // buffer redacts it; a bare probe gets a 401 until that credential is
   // carried. Older kernels print no token, `webToken()` stays null, and the
   // probe degrades to the plain one.
+  /** @param {string} url @param {AbortSignal} signal */
   const probeWithToken = (url, signal) => httpProbe(tokenised(url, process_.webToken()), signal)
 
   const readiness = await waitForReady({
@@ -817,6 +821,7 @@ function createWindow(origin, token) {
   // The built-in loading and error pages are `data:` URLs — they are the shell's
   // own content, served by nobody, so navigation to them is always allowed.
   // Everything else still goes through the origin policy below.
+  /** @param {string} url */
   const isShellPage = (url) => url.startsWith('data:')
 
   webContents.on('will-navigate', (event, url) => {
@@ -844,6 +849,7 @@ function createWindow(origin, token) {
   // renderer death does not leave the user looking at a dead window. Past the
   // limit it stops retrying — a page that keeps dying is a problem the user
   // has to see, not something to reload forever.
+  /** @type {number[]} */
   let rendererRecoveries = []
   webContents.on('render-process-gone', (_event, details) => {
     console.error(`renderer gone: ${details.reason}`)
@@ -955,6 +961,7 @@ async function restartKernel() {
     // surface: a bare probe gets a 401, `isServing` rejects it, and the restart
     // sits on "waiting for the kernel" forever. The first launch already
     // accounts for this; the restart has to do the same.
+    /** @param {string} url @param {AbortSignal} signal */
     const probeWithToken = (url, signal) =>
       httpProbe(tokenised(url, process_.webToken()), signal)
     const readiness = await waitForReady({
@@ -1106,7 +1113,9 @@ if (!app.requestSingleInstanceLock()) {
 
       // The kernel may already be ready by the time the tray exists; backfill
       // its status line so the tray is not stuck on "starting…".
-      if (kernelState !== null) tray.setState(kernelState)
+      if (kernelState !== null) {
+        tray.setState(/** @type {import('./tray.js').KernelState} */ (kernelState))
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
@@ -1120,7 +1129,9 @@ if (!app.requestSingleInstanceLock()) {
         appVersion: app.getVersion(),
         ready: false,
         message,
-        output: kernel?.logText?.() ?? '',
+        // `logText` lives on the kernel *process*, not the supervisor — the
+        // supervisor keeps the launch that owns it behind `current`.
+        output: kernel?.current?.logText?.() ?? '',
       }).catch(() => null)
 
       dialog.showErrorBox(
