@@ -151,7 +151,9 @@ export class KernelProcess {
       this.#pendingOutput += String(chunk)
       if (this.#webToken === null) {
         const match = /dsh web:\s*https?:\/\/[^\s]+?\/\?token=([A-Za-z0-9_-]+)/.exec(this.#pendingOutput)
-        if (match !== null) this.#webToken = match[1]
+        // The capture group is present whenever the match is, but the compiler
+        // cannot know that; `?? null` keeps the field's type honest.
+        if (match !== null) this.#webToken = match[1] ?? null
       }
       // Keep the pending window small: it only needs to span the one token
       // line, which is short. Once captured it is no longer consulted.
