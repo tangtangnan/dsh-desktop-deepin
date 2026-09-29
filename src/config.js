@@ -53,6 +53,9 @@ const DEFAULTS = {
     maxRecoveries: 3,
     recoveryWindowMs: 60_000,
   },
+  // How long the loading page stays up after the kernel is ready, in ms, so
+  // its log pane can actually be read. 0 disables the floor.
+  splashMinMs: 3_000,
   tray: {
     summonAccelerator: 'CommandOrControl+Shift+Space',
     showBalance: false,
