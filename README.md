@@ -1,0 +1,312 @@
+# DeepSeek Harness Desktop
+
+An unofficial community desktop shell for the public
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) agent runtime.
+
+`dsh` is a command-line agent runtime that also serves a full web UI. This project wraps
+that runtime in a desktop application: it starts the kernel as a local child process,
+waits until it is genuinely serving, and shows its UI in a hardened window — so the
+runtime can be launched by double-clicking rather than from a terminal.
+
+> **Status: early development.** The kernel itself is an upstream developer preview
+> (`0.1.0-rc.x`) whose configuration surface is still changing. Windows and macOS
+> (Apple Silicon and Intel) are the platforms that have been built end to end; see
+> [Roadmap](#roadmap) for the rest.
+
+| | |
+|:---:|:---:|
+| ![Starting a session](docs/images/01-home.png) | ![Choosing an agent preset](docs/images/02-agent-modes.png) |
+| Starting a session in a workspace | Choosing an agent preset |
+| ![Plugin settings](docs/images/03-settings-plugins.png) | ![General settings](docs/images/04-settings-general.png) |
+| Configuring the kernel's plugins | Presets, permissions, and appearance |
+
+# DeepSeek Harness Desktop  (Deepin / UOS / Linux x86_64 build)
+
+This is a **Deepin / UOS / Linux x86_64 build** of the community
+[DeepSeek Harness Desktop](https://github.com/sleep2agi/DeepSeek-Harness-Desktop)
+shell. The upstream project targets Windows and macOS; this fork keeps the same
+Electron shell intact and adds a Linux packaging path (`deb` + `AppImage`) with
+all of the upstream's security, readiness, and process-tree policies preserved.
+
+![Running on Deepin 25](docs/images/05-deepin-running.png)
+
+## About this fork
+
+Everything in this repository is adapted from — and built on top of — two
+upstream projects. Both are public, both use pinned public dependencies, and
+neither is being forked or vendored here:
+
+- **deepseek-ai/deepseek-harness** — the `dsh` kernel and web UI.
+  <https://github.com/deepseek-ai/deepseek-harness>
+- **sleep2agi/DeepSeek-Harness-Desktop** — the Electron desktop shell for
+  Windows and macOS, on top of which this Linux build is based.
+  <https://github.com/sleep2agi/DeepSeek-Harness-Desktop>
+
+The Linux-only differences from upstream are:
+
+1. `upstream.lock.json` adds a `linux-x64` Node runtime entry, checksum-verified
+   against nodejs.org, so the kernel is still run on a real Node build rather
+   than Electron-as-Node.
+2. `tools/install-kernel.js` swaps `node-pty` to a release that still ships its
+   Linux native source, since upstream `node-pty@1.1.0` removed its `src/unix/`
+   sources and `npm rebuild` fails on Linux without intervention.
+3. `tools/after-pack.js` validates that the bundled `node` binary is present in
+   the packaged `resources/kernel/` on Linux, as it already does for Windows
+   and macOS.
+4. `package.json` `build.linux` config adds `deb` and `AppImage` targets with
+   the runtime deps a Deepin installation needs.
+
+## Shipped plugins
+
+Out of the box the shell installs a small set of community plugins into every
+user's profile, so the bundled application is useful from the first launch
+rather than starting as an empty runtime. The list is pinned in
+[`upstream.lock.json#shippedPlugins`](upstream.lock.json); today:
+
+| Plugin | What it adds |
+|---|---|
+| `dshmarket` | A visual plugin market inside the kernel UI — browse, search, and one-click install community plugins, no terminal needed. |
+
+The build pipeline (`tools/install-kernel.js`) lays each shipped plugin into
+`resources/kernel/node_modules/<name>/` at install time, and the shell
+registers it into the user's profile on first launch (`src/main.js`,
+`ensureShippedPlugins`). The kernel resolves bundles from both the
+installation anchor and the user's profile, so a plugin installed at build
+time is reachable from any user without each user having to fetch it
+themselves — and once registered, the user can update or remove it from
+inside the kernel UI without touching the bundled copy.
+
+Adding a new shipped plugin is a two-step commit:
+
+1. Add the package name, version, and `sha512` integrity from npm to
+   `upstream.lock.json#shippedPlugins` so the install step verifies what
+   landed on disk.
+2. Re-run `npm run kernel:install`. The plugin is fetched alongside the
+   kernel and gets picked up on the next launch by the auto-discovery in
+   `ensureShippedPlugins` — no shell code change is required.
+
+## Linux-only features added on top of upstream
+
+- **OS menu bar, kept.** The chat UI is still driven entirely by the rendered
+  web surface, but the menu bar is no longer removed: `src/app-menu.js` builds
+  a real application menu (应用 / 文件 / 编辑 / 视图 / 窗口), matching the
+  official shell, which documents that Linux keeps the application and Edit
+  menus. Its first item opens Electron's native **About** panel with the app
+  icon, product name and installed version. DevTools is registered as two
+  *hidden* entries so **F12** and **Ctrl+Shift+I** work in packaged builds
+  without advertising them. `autoHideMenuBar: true` keeps the bar out of the
+  way until Alt is pressed.
+- **Directory-picker fallback.** The official shell falls back to browse mode
+  when Linux has neither `zenity` nor `kdialog`, because Electron's native
+  folder dialog shells out to one of them and silently does nothing without
+  it. `src/directory-picker.js` probes `PATH` and selects the picker;
+  `kernel.directoryPicker` in `config.json` can pin it to `auto`/`browse`/`native`.
+- **Crash reports.** `src/diagnostics.js` writes `crash-<UTC>-<source>.log` to
+  the platform log directory — `logs` under `userData` on Linux and Windows —
+  and keeps the most recent ten, replacing the old unbounded `kernel-exit.log`
+  and `startup-error.log`.
+- **Denied web permissions.** The page in the window is the kernel's web UI, not
+  shell code, so `src/permissions.js` refuses camera, microphone, clipboard and
+  notification requests rather than letting Chromium prompt.
+- **Remembered window geometry.** `src/window-state.js` restores the size and
+  position the user last left, reusing a saved position only when enough of the
+  window would still be visible on a connected display.
+- **Configurable key bindings.** Overrides live in `userData/keybindings.json`,
+  separate from `DSH_HOME`. On Linux a binding is delivered by dispatching into
+  the document, not by intercepting the keystroke — the official shell documents
+  the same split, and it is what keeps editing and IME input working.
+- **Exit confirmation.** `src/exit-guard.js` decides whether quitting prompts
+  first. **This is the one place this shell knowingly differs from upstream**:
+  the official shell asks its Host what quitting would interrupt, over a private
+  IPC channel that belongs to its private Desktop Host package. This shell has
+  no such channel, so the policy is declared in `kernel.exitPolicy`
+  (`ask-always` by default) rather than derived.
+- **System tray + hide-to-tray.** `src/tray.js` registers an Electron `Tray`
+  with a Show/Hide/Quit menu; clicking the X on the main window hides it
+  instead of quitting, and the kernel keeps running in the background. An
+  explicit Quit (tray menu or `before-quit`) is what tears the whole app down.
+- **Background-completion toast.** `src/preload.js` exposes exactly two
+  methods (`shell.notify`, `shell.onShown`) through a sandboxed
+  `contextBridge` — the entire renderer-facing surface.
+  `src/dom-observer.js` is injected via `webContents.executeJavaScript` after
+  every page load and uses a `MutationObserver` to watch the kernel's web UI
+  for an in-flight indicator (`aria-busy="true"`, `data-state="generating"`,
+  `思考中` / `生成中`, and the `dsh-generating` / `dsh-thinking` /
+  `dsh-streaming` class names). The busy → idle transition fires a desktop
+  notification through the shell.
+
+Everything above is the upstream web UI, served by the kernel and rendered in the shell's
+window. The shell contributes the window, the process, and the security policy around
+them — not the interface.
+
+## What this is, and what it is not
+
+This repository contains **only the desktop shell**. All agent behaviour — models, tools,
+sessions, permissions, the web UI — comes from the upstream kernel and its plugins.
+
+The shell owns four things, and deliberately nothing else:
+
+| Concern | What the shell does |
+|---|---|
+| **Process** | Starts `dsh` as a child process on a free port, and shuts down the whole process tree on exit. |
+| **Readiness** | Waits for a real HTTP response from *this* launch before showing a window. |
+| **Window** | Applies a fixed security policy: sandboxed renderer, exact-origin navigation allowlist, `http`/`https`-only external links. |
+| **Configuration** | Expresses its preferences as a patch overlay, through the kernel's own supported mechanism, without modifying upstream code. |
+
+Nothing upstream is patched or vendored-and-edited. The kernel is installed from npm at a
+pinned version, and every shell preference goes through `--patch`, which is a first-class
+part of the launcher's configuration layering.
+
+## Design notes
+
+A few decisions that are easy to get wrong, and why this shell makes them the way it does.
+
+**An open port is not a ready server.** The kernel's web server binds its port during
+startup, and a plugin failing afterwards can still bring the process down. In that window
+a TCP connection succeeds while nothing is being served, and a window pointed at it shows
+a blank page. Readiness therefore requires a real HTTP 2xx/3xx response.
+
+**Readiness is bound to one launch.** Every probe attempt re-checks that the process being
+waited on is still the current one. Otherwise a kernel that died and left its port to
+another program on the machine would answer the probe perfectly well — with someone else's
+server.
+
+**Navigation is compared as an exact origin.** `startsWith('http://127.0.0.1:')` also
+matches any other service running locally, and `includes('127.0.0.1')` matches
+`http://evil.example/?x=127.0.0.1`. The loaded page decides its own links; the shell does
+not get to assume they are benign.
+
+**Secrets are redacted as they enter the log buffer,** not as they leave it. Redacting at
+read time still leaves the plaintext sitting in this process's memory until then. The
+matching is by shape and cannot be complete — it is a second line of defence, not a
+guarantee.
+
+**The kernel gets its own `DSH_HOME`,** and every inherited `DSH_*` variable is dropped.
+Sharing a home directory with a `dsh` the user installed themselves would have the two
+overwrite each other's configuration, and would put the user's own stored credentials
+within reach of this process.
+
+**Telemetry is switched off explicitly.** Upstream already defaults it to disabled; the
+shell states it anyway, so the default is a property of this application rather than of
+whichever kernel version happens to be bundled.
+
+**The kernel runs on its own bundled Node, not on Electron's.** Those are different
+runtimes, and the difference is not theoretical. With an identical kernel and an identical
+configuration, launched under Electron-as-Node the kernel aborts during startup:
+
+```
+failed to apply loader entry … (@deepseek-ai/cordis-plugin-hmr):
+  --expose-internals is required for HMR service
+```
+
+and on a stock Node build of the same major version it starts cleanly. Notably this
+happens *after* the web server is already answering HTTP — so even a real HTTP response is
+not proof that the process will stay up, which is why an unexpected kernel exit is
+reported rather than silently leaving a window pointed at nothing.
+
+The bundled runtime is downloaded from nodejs.org, checked against the SHA-256 published
+in that release's `SHASUMS256.txt`, and then asked what version it is. Both checks fail the
+build rather than warn.
+
+**What ships is not what npm installs.** An npm tree is published for developers: debug
+symbols, source maps, the TypeScript the JavaScript was built from, documentation, and
+prebuilt binaries for every platform. None of it is opened by a running application, and
+all of it would ship to every user — 180 MB of the installed size. `tools/prune-kernel.js`
+removes it, keeping licences and notices in every spelling, since redistributing
+MIT-licensed code without its licence text is a violation. The end-to-end test runs against
+the pruned kernel, so a size win that broke startup fails the build.
+
+## Requirements
+
+**To run a packaged build:** nothing. The kernel and its Node runtime are inside the
+installer.
+
+**To develop:** Node.js ≥ 22.15.0 — the kernel uses `zlib.createZstdDecompress`, which does
+not exist in earlier versions.
+
+Windows and macOS ship a bundled, checksum-verified Node runtime, so a packaged build has
+no external requirements. Linux is expected to work but has not been exercised, and still
+falls back to the system Node.
+
+## Development
+
+```sh
+npm install          # shell dependencies (Electron, builder, types)
+npm test             # unit tests for every load-bearing decision — no network, no Electron
+npm run kernel:install   # fetch the pinned kernel into resources/kernel
+npm start            # launch the shell against it
+npm run dist:mac     # signed-ad-hoc .dmg and .zip for this Mac
+npm run dist:win     # NSIS installer and .zip for Windows
+```
+
+The kernel version is pinned in [`upstream.lock.json`](upstream.lock.json), which is the
+single source of truth for it. Upgrading is an explicit commit, not something a rebuild
+does on its own — upstream is a developer preview and documents that it will make
+breaking changes.
+
+### Layout
+
+Load-bearing *decisions* live in plain modules with no Electron or filesystem imports, so
+they can be tested directly:
+
+| Module | Decides |
+|---|---|
+| `src/window-policy.js` | Where the window may navigate; what may be handed to the OS. |
+| `src/kernel-runtime.js` | The kernel's argument vector and environment. |
+| `src/readiness.js` | When the kernel counts as ready. |
+| `src/log-redact.js` | What may enter the log buffer, and how much is kept. |
+| `src/restart-policy.js` | Whether a dead kernel gets another attempt, and after how long. |
+| `src/directory-picker.js` | Whether the native folder dialog can be trusted on this platform. |
+| `src/app-menu.js` | The OS menu bar's structure, including the About panel. |
+| `src/shortcuts.js` | Which bindings are accepted, and how one is delivered. |
+| `src/window-state.js` | Whether a remembered size and position can be reused. |
+| `src/exit-guard.js` | Whether quitting should prompt first. |
+| `src/diagnostics.js` | Where a crash report goes, and how many are kept. |
+| `src/config-file.js` | How a shell configuration file is written without tearing. |
+
+`src/main.js` does IO and orchestration only.
+
+## Roadmap
+
+- [x] Kernel launch, argument and environment construction
+- [x] Readiness probe bound to a single launch
+- [x] Window and navigation security policy
+- [x] Bounded, redacted log capture
+- [x] Bundled, checksum-verified Node runtime
+- [x] Windows installer, verified by launching it and loading the UI
+- [x] macOS build (Apple Silicon and Intel runtimes; `.dmg` + `.zip`)
+- [ ] Linux builds
+- [ ] Workspace picker fix — the native picker crashes on Windows in the current kernel
+      preview; `buildShellPatch({ useBrowseDirectoryPicker: true })` selects the non-native
+      implementation, and it is not enabled by default yet
+
+### macOS notes
+
+Packaged builds are ad-hoc signed, not notarized. A download from the internet will be
+quarantined by Gatekeeper. Right-click the app and choose Open, or:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
+```
+
+A Mac launched from the Dock has a minimal `PATH`. The shell prepends Homebrew's usual
+locations (`/opt/homebrew/bin`, `/usr/local/bin`) so the kernel can still find `git` and
+the rest of a developer toolchain.
+
+## Independence
+
+Everything here is written from public sources against pinned public dependencies. It does
+not copy private product code, and contains no organization-specific branding,
+authentication clients, private endpoints, update feeds, credentials, or telemetry. The
+`scan:leaks` check in CI enforces this against the working tree and the committed history,
+and fails the build rather than warning.
+
+This project is not affiliated with or endorsed by DeepSeek.
+
+## Licence
+
+Repository-authored code is MIT — see [LICENSE](LICENSE).
+
+This project bundles the upstream `@deepseek-ai/dsh` kernel, which is also MIT-licensed.
+Third-party components retain their own licences, redistributed with the packaged
+application; see [NOTICE](NOTICE) for attribution and the trademark position.
