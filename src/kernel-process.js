@@ -6,7 +6,7 @@
 
 import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { LogBuffer } from './log-redact.js'
+import { LogBuffer, redact } from './log-redact.js'
 
 /**
  * Options passed to `spawn` for a kernel launch.
@@ -84,6 +84,8 @@ export class KernelProcess {
   #exitCode = null
   /** @type {Array<(info: {code: number | null, signal: string | null}) => void>} */
   #exitListeners = []
+  /** @type {Array<(line: string) => void>} */
+  #outputListeners = []
   #stopping = false
   /** @type {string | null} */
   #webToken = null
@@ -144,6 +146,7 @@ export class KernelProcess {
     child.stdout?.setEncoding('utf8')
     child.stdout?.on('data', (chunk) => {
       this.#log.push(String(chunk))
+      this.#emitLines(String(chunk))
       // The kernel prints its per-launch web token exactly once, on this
       // line. The LogBuffer above redacts it (`?token=[redacted]`), so the
       // credential this launch needs is only ever captured here, against
@@ -160,7 +163,27 @@ export class KernelProcess {
       if (this.#pendingOutput.length > 4096) this.#pendingOutput = this.#pendingOutput.slice(-512)
     })
     child.stderr?.setEncoding('utf8')
-    child.stderr?.on('data', (chunk) => this.#log.push(String(chunk)))
+    child.stderr?.on('data', (chunk) => {
+      this.#log.push(String(chunk))
+      this.#emitLines(String(chunk))
+    })
+  }
+
+  /**
+   * Splits a chunk into lines and hands the redacted ones to listeners.
+   *
+   * Redaction happens here rather than at the listener so the page can never
+   * receive a credential the log buffer would have hidden.
+   *
+   * @param {string} chunk
+   * @returns {void}
+   */
+  #emitLines(chunk) {
+    if (this.#outputListeners.length === 0) return
+    for (const line of redact(chunk).split(/\r?\n/)) {
+      if (line.trim() === '') continue
+      this.#emitOutput(line)
+    }
   }
 
   /** @returns {boolean} whether this launch is still alive */
@@ -176,6 +199,36 @@ export class KernelProcess {
    */
   onUnexpectedExit(listener) {
     this.#exitListeners.push(listener)
+  }
+
+  /**
+   * Registers a listener for every line the kernel writes.
+   *
+   * This is what lets the startup screen show the kernel's own output: the
+   * user sees "loading plugin X", "MCP server ready" and so on, which turns an
+   * opaque wait into a visible one. Lines are already redacted before they
+   * reach the listener, so a token cannot leak into the page.
+   *
+   * @param {(line: string) => void} listener
+   * @returns {() => void} unsubscribe
+   */
+  onOutput(listener) {
+    this.#outputListeners.push(listener)
+    return () => {
+      const index = this.#outputListeners.indexOf(listener)
+      if (index >= 0) this.#outputListeners.splice(index, 1)
+    }
+  }
+
+  /** @param {string} line @returns {void} */
+  #emitOutput(line) {
+    for (const listener of this.#outputListeners) {
+      try {
+        listener(line)
+      } catch {
+        // A listener that throws must not take the kernel down with it.
+      }
+    }
   }
 
   /** @returns {number | undefined} */
