@@ -22,6 +22,9 @@ SCRIPT_DIR="${SCRIPT_PATH%/*}"
 [ "$SCRIPT_DIR" = "$SCRIPT_PATH" ] && SCRIPT_DIR="."
 SHELL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG="$SHELL_DIR/config.json"
+# 每用户覆盖配置：全局 /opt/.../config.json 只读，用户改的东西落这里。
+USER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dsh-desktop"
+USER_CONFIG="$USER_CONFIG_DIR/config.json"
 RUNTIME_DIR="${HOME}/.dsh-desktop/runtime"
 
 # 国内镜像（全部实测可用）。顺序即优先级。
@@ -124,9 +127,12 @@ pick_fastest() {
 # ── 读取 config.json 里的某个 launcher 值（纯 shell，不依赖 node）────────
 # 用 grep/sed 抠 JSON 字符串值。配置由本项目生成，格式稳定，够用。
 config_value() {
-  local key="$1"
-  [ -f "$CONFIG" ] || return 1
-  sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CONFIG" | head -1
+  local key="$1" v=""
+  if [ -f "$USER_CONFIG" ]; then
+    v="$(sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$USER_CONFIG" | head -1)"
+  fi
+  [ -z "$v" ] && [ -f "$CONFIG" ] && v="$(sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CONFIG" | head -1)"
+  printf '%s' "$v"
 }
 
 # ── 版本比较：a >= b（按 major.minor 比较，够用）────────────────────────
@@ -332,19 +338,26 @@ install_dsh() {
   return 1
 }
 
-# ── 把解析出的路径写回 config.json ─────────────────────────────────────
+# ── 把解析出的路径写回「用户覆盖份」而非全局份 ─────────────────────────
+# 全局 /opt/.../config.json 保持只读（root 才写得动、且多用户会互相覆盖），
+# 所以自举检测到的路径写进每个用户自己的 ~/.config/dsh-desktop/config.json。
 # 改动前备份；用 sed 做定点替换，保留文件里的注释字段。
 writeback() {
-  [ -f "$CONFIG" ] || { bad "找不到 $CONFIG"; return 1; }
-  cp -n "$CONFIG" "$CONFIG.bak-bootstrap" 2>/dev/null
+  mkdir -p "$USER_CONFIG_DIR"
+  # 临时文件统一在此声明，if/else 两个分支都必须赋值，否则 set -u 下
+  # 首次安装（用户份尚不存在、走 else 分支）会报「tmp：未绑定的变量」。
+  local tmp="$USER_CONFIG.tmp.$$"
+  # 底子：用户份已有则继承，否则从全局份复制（保留全局份的所有字段与注释）。
+  if [ -f "$USER_CONFIG" ]; then
+    cp -n "$USER_CONFIG" "$USER_CONFIG.bak-bootstrap" 2>/dev/null || true
+    cp "$USER_CONFIG" "$tmp"
+  else
+    cp "$CONFIG" "$tmp" 2>/dev/null || { bad "找不到 $CONFIG"; return 1; }
+  fi
 
-  local tmp="$CONFIG.tmp.$$"
-  cp "$CONFIG" "$tmp"
   set_kv() {
     local key="$1" value="$2"
-    # 转义替换值里的斜杠，避免破坏 sed 表达式
     local escaped; escaped=$(printf '%s' "$value" | sed 's/[&/\\]/\\&/g')
-    sed -i "s|\"\\(${key}\"\\)[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"\\1: \"${escaped}\"|" "$tmp"
     sed -i "s|\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"${key}\": \"${escaped}\"|" "$tmp"
   }
 
@@ -358,8 +371,8 @@ writeback() {
     set_kv systemDsh "$DSH_BIN"
   fi
 
-  mv "$tmp" "$CONFIG"
-  ok "已写回 config.json（备份：config.json.bak-bootstrap）"
+  mv "$tmp" "$USER_CONFIG"
+  ok "已写回用户配置（备份：$USER_CONFIG.bak-bootstrap）"
 }
 
 # ── 主流程 ─────────────────────────────────────────────────────────────
