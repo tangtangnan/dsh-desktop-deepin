@@ -67,14 +67,19 @@ rm -f "$APP_DIR/tools/install-kernel.js" "$APP_DIR/tools/install-node.js" \
       "$APP_DIR/tools/prune-kernel.js" "$APP_DIR/tools/after-pack.js" \
       "$APP_DIR/src/supervisor-smoke.mjs" 2>/dev/null
 
-# 脚本需要可执行权限
+# 整树权限兜底：确保装到别的用户机器上，普通用户能读能进（否则 EACCES）。
+# dpkg-deb --root-owner-group 只把 owner/group 改成 root，不动 mode；而构建机
+# 上的文件若带限制性 mode（如 0640）或父目录不可进，普通用户运行 electron 时
+# 读 /opt/.../src/*.js 就会被 permission denied 打崩。
+#   a+rX ：所有文件加读、目录加执行（X 只对目录/已有执行位文件生效，不会给普通
+#           .js 乱加执行位，也不会清除已有的写位）。
+# 之后再单独把启动脚本钉成 0755（a+rX 不会动它，这里是双保险）。
+chmod -R a+rX "$APP_DIR"
 chmod 0755 "$APP_DIR/start-shell.sh"
 chmod 0755 "$APP_DIR/tools/bootstrap.sh"
 chmod 0755 "$APP_DIR/tools/doctor.js" 2>/dev/null || true
 
-# 全局只读配置/元数据：必须为 0644，否则装到别的用户机器上会因 600（构建机
-# 用户残留）导致非 root 用户读不了 config.json 而启动失败。--root-owner-group
-# 只改 owner 不改 mode，所以这里必须显式把 mode 修正为 0644。
+# 全局只读配置/元数据：必须为 0644（a+rX 已保证可读，这里再显式钉死避免回归）。
 chmod 0644 "$APP_DIR/config.json"
 chmod 0644 "$APP_DIR/package.json"
 chmod 0644 "$APP_DIR/LICENSE" 2>/dev/null || true
