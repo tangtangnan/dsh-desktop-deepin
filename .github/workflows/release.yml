@@ -70,9 +70,44 @@ jobs:
             release/*.blockmap
           if-no-files-found: error
 
+  # ── Linux deb 打包（方案 A：deb 只含壳代码，运行时首次启动按架构自举下载）──
+  # Electron/Node/dsh 都不进包，所以同一个源码分别打 amd64 与 arm64 两个架构的 deb。
+  build-linux-deb:
+    name: Build deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.15'
+
+      - name: Install shell dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build the ${{ matrix.arch }} deb
+        run: bash tools/build-deb.sh ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: release/*.deb
+          if-no-files-found: error
+
   publish:
     name: Publish release
-    needs: build
+    needs: [build, build-linux-deb]
     runs-on: ubuntu-latest
 
     steps:
