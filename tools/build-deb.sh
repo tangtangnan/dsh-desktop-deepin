@@ -21,6 +21,18 @@ PKG_NAME="deepseek-harness-desktop"
 VERSION="$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '0.1.2')"
 OUTPUT_DIR="$ROOT/release"
 
+# ── 目标架构 ───────────────────────────────────────────────────────────
+# 壳本身（src/ tools/ config.json）是架构无关的纯 JS + shell，deb 不含运行时，
+# 运行时由 bootstrap.sh 按 uname -m 首次启动下载（官方 Electron/Node 均提供
+# linux-arm64 / linux-x64 预编译包）。所以同一个源码可以打 amd64 与 arm64 两种包。
+# 用法：bash tools/build-deb.sh [amd64|arm64]，默认 amd64。
+ARCH="${1:-amd64}"
+case "$ARCH" in
+  amd64|x86_64) ARCH="amd64"; DEB_ARCH="amd64"; NODE_ARCH_LABEL="x86_64" ;;
+  arm64|aarch64|arm) ARCH="arm64"; DEB_ARCH="arm64"; NODE_ARCH_LABEL="aarch64" ;;
+  *) err "不支持的架构: $ARCH（仅支持 amd64 / arm64）" ;;
+esac
+
 err() { echo "✖ $*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
@@ -60,6 +72,14 @@ chmod 0755 "$APP_DIR/start-shell.sh"
 chmod 0755 "$APP_DIR/tools/bootstrap.sh"
 chmod 0755 "$APP_DIR/tools/doctor.js" 2>/dev/null || true
 
+# 全局只读配置/元数据：必须为 0644，否则装到别的用户机器上会因 600（构建机
+# 用户残留）导致非 root 用户读不了 config.json 而启动失败。--root-owner-group
+# 只改 owner 不改 mode，所以这里必须显式把 mode 修正为 0644。
+chmod 0644 "$APP_DIR/config.json"
+chmod 0644 "$APP_DIR/package.json"
+chmod 0644 "$APP_DIR/LICENSE" 2>/dev/null || true
+chmod 0644 "$APP_DIR/NOTICE" 2>/dev/null || true
+
 # ── DEBIAN 控制文件 ─────────────────────────────────────────────────────
 say "写 DEBIAN/control…"
 cat > "$STAGE/DEBIAN/control" <<EOF
@@ -67,11 +87,11 @@ Package: $PKG_NAME
 Version: $VERSION
 Section: devel
 Priority: optional
-Architecture: amd64
+Architecture: $DEB_ARCH
 Depends: bash, curl | wget, tar, gzip, unzip, ca-certificates
 Maintainer: DeepSeek Harness Desktop Community <noreply@example.com>
-Description: DeepSeek Harness 桌面壳（Deepin / UOS / Linux）
- 面向 Deepin / UOS / Linux x86_64 的 DeepSeek Harness 桌面壳。
+Description: DeepSeek Harness 桌面壳（Deepin / UOS / Linux $NODE_ARCH_LABEL）
+ 面向 Deepin / UOS / Linux $NODE_ARCH_LABEL 的 DeepSeek Harness 桌面壳。
  把命令行 agent 运行时 dsh 包进 Electron 窗口，双击即用。
  .
  本包只包含壳代码（约 1MB）。Electron、Node 与 dsh 内核在首次
@@ -125,7 +145,7 @@ EOF
 
 # ── 打包 ───────────────────────────────────────────────────────────────
 mkdir -p "$OUTPUT_DIR"
-DEB_FILE="$OUTPUT_DIR/DeepSeek-Harness-Desktop-${VERSION}-amd64.deb"
+DEB_FILE="$OUTPUT_DIR/DeepSeek-Harness-Desktop-${VERSION}-${ARCH}.deb"
 say "打包 $DEB_FILE …"
 dpkg-deb --build --root-owner-group "$STAGE" "$DEB_FILE" || err "dpkg-deb 打包失败"
 
