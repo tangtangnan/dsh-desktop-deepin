@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { mkdir, symlink } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron'
@@ -572,7 +573,18 @@ async function startKernel() {
   // e.g. the system default "/home/wangke/.dsh". An absolute value means the
   // shell shares the kernel home with anything else using that directory.
   const homeSubdir = getConfig().kernel.homeSubdir
-  const dshHome = isAbsolute(homeSubdir) ? homeSubdir : join(app.getPath('userData'), homeSubdir)
+  // `~` is not an absolute path as far as Node is concerned, but every user
+  // writes it that way. Without this expansion `~/.dsh` was treated as a
+  // relative path and joined onto userData, producing a literal directory
+  // named `~` inside the shell's data folder — the kernel then started against
+  // an empty home instead of the user's real one, which is why it appeared to
+  // ignore their plugins entirely.
+  const expanded = homeSubdir === '~'
+    ? homedir()
+    : homeSubdir.startsWith('~/')
+      ? join(homedir(), homeSubdir.slice(2))
+      : homeSubdir
+  const dshHome = isAbsolute(expanded) ? expanded : join(app.getPath('userData'), expanded)
   await mkdir(dshHome, { recursive: true })
 
   // Shipped plugins must be registered in the profile before the kernel starts, so
@@ -714,6 +726,11 @@ async function startKernel() {
     url: `${origin}/`,
     isCurrent: () => process_.isRunning(),
     probe: systemKernel ? probeWithToken : httpProbe,
+    // From config.json. This used to omit `timeoutMs` entirely, so the
+    // documented `supervisor.readinessTimeoutMs` was dead configuration and
+    // the hard-coded 90 s in readiness.js always won — a kernel that needed
+    // longer failed regardless of what the file said.
+    timeoutMs: getConfig().supervisor.readinessTimeoutMs,
   })
 
   if (!readiness.ok) {
@@ -1139,6 +1156,7 @@ async function restartKernel() {
       url: `${origin}/`,
       isCurrent: () => process_.isRunning(),
       probe: systemKernelMode ? probeWithToken : httpProbe,
+      timeoutMs: getConfig().supervisor.readinessTimeoutMs,
     })
     if (!readiness.ok) {
       throw new Error(`the restarted kernel never became ready (${readiness.reason})`)
