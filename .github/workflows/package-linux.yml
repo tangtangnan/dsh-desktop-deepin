@@ -3,6 +3,7 @@ name: Package Linux
 # 打包 deb（方案 A：只装壳代码，约 100KB）。
 # Electron / Node / dsh 运行时由最终用户首次启动时按需下载（国内镜像优先），
 # 见 tools/bootstrap.sh。因此这里用 dpkg-deb 手工打包，不走 electron-builder。
+# 同一个源码分别打 amd64 与 arm64 两种架构（运行时按 uname -m 自举下载对应包）。
 
 on:
   push:
@@ -17,6 +18,10 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -32,15 +37,16 @@ jobs:
 
       # 不下载内核 / Node / Electron：三者都在首次启动时按需获取（见 README）。
 
-      - name: Package deb (壳代码，约 100KB)
+      - name: Package deb (${{ matrix.arch }}，壳代码约 100KB)
         # 方案 A：deb 只装壳代码，Electron/Node/dsh 首次启动按需下载。
         # 用 dpkg-deb 手工打包，不再用 electron-builder（它会把 Electron 打进包）。
-        run: bash tools/build-deb.sh
+        # 传架构参数分别产出 amd64 / arm64 两个包。
+        run: bash tools/build-deb.sh ${{ matrix.arch }}
 
       - name: Collect artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-artifacts
+          name: linux-artifacts-${{ matrix.arch }}
           path: |
             release/*.deb
 
