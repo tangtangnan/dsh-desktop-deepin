@@ -16,6 +16,9 @@ SCRIPT_DIR="${SCRIPT_PATH%/*}"
 [ "$SCRIPT_DIR" = "$SCRIPT_PATH" ] && SCRIPT_DIR="."
 SHELL_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 CONFIG="$SHELL_DIR/config.json"
+# 每用户覆盖配置：全局 /opt/.../config.json 只读，用户改的东西都落这里。
+USER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dsh-desktop"
+USER_CONFIG="$USER_CONFIG_DIR/config.json"
 BOOTSTRAP="$SHELL_DIR/tools/bootstrap.sh"
 RUNTIME_DIR="${HOME}/.dsh-desktop/runtime"
 
@@ -33,10 +36,32 @@ ELECTRON_MIN_MAJOR=33
 
 [ -f "$CONFIG" ] || err "配置文件缺失: $CONFIG"
 
-# ── 读 config.json（纯 shell，不依赖 node；node 可能还没装）──────────────
+# ── 读 config（纯 shell，不依赖 node；node 可能还没装）──────────────────
+# 取值顺序：用户覆盖份 (~/.config/dsh-desktop/config.json) 优先，
+#           全局份 (/opt/.../config.json) 兜底。两处都没有则空。
 config_value() {
-  local key="$1"
-  sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CONFIG" | head -1
+  local key="$1" v=""
+  if [ -f "$USER_CONFIG" ]; then
+    v="$(sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$USER_CONFIG" | head -1)"
+  fi
+  [ -z "$v" ] && v="$(sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CONFIG" | head -1)"
+  printf '%s' "$v"
+}
+
+# 把某个 key 写进「用户覆盖份」而不是全局份。全局份保持只读，避免多用户互相
+# 覆盖、也避免普通用户写不了 /opt。首次写时从全局份继承其它字段做底子。
+set_user_kv() {
+  local key="$1" value="$2" esc
+  esc="$(printf '%s' "$value" | sed 's/[&/\\|]/\\&/g')"
+  mkdir -p "$USER_CONFIG_DIR"
+  # 底子：用户份已有的合并全局份，缺失则新建最小骨架
+  if [ -f "$USER_CONFIG" ]; then
+    cp "$USER_CONFIG" "$USER_CONFIG.tmp.$$"
+  else
+    cp "$CONFIG" "$USER_CONFIG.tmp.$$" 2>/dev/null || printf '{\n}\n' > "$USER_CONFIG.tmp.$$"
+  fi
+  sed -i "s|\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"${key}\": \"${esc}\"|" "$USER_CONFIG.tmp.$$"
+  mv "$USER_CONFIG.tmp.$$" "$USER_CONFIG"
 }
 
 resolve_rel() {
@@ -167,23 +192,21 @@ if [ "$ELECTRON" != "$ELECTRON_CFG" ] || [ "$SYSTEM_DSH" != "$DSH_CFG" ] || [ "$
   [ "$NEW_NODE_DIR" != "$NODE_CFG" ]  && info "launcher.nodeBinDir: $NODE_CFG  →  $NEW_NODE_DIR"
   [ "$SYSTEM_DSH" != "$DSH_CFG" ]     && info "launcher.systemDsh : $DSH_CFG  →  $SYSTEM_DSH"
 
-  cp -n "$CONFIG" "$CONFIG.bak-first-run" 2>/dev/null || true
-  TMP="$CONFIG.tmp.$$"
-  cp "$CONFIG" "$TMP"
-  set_kv() {
-    local key="$1" value="$2" esc
-    esc=$(printf '%s' "$value" | sed 's/[&/\\|]/\\&/g')
-    sed -i "s|\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"${key}\": \"${esc}\"|" "$TMP"
-  }
-  set_kv electron "$ELECTRON"
-  set_kv nodeBinDir "$NEW_NODE_DIR"
-  set_kv systemDsh "$SYSTEM_DSH"
-  mv "$TMP" "$CONFIG"
-  ok "已写回（备份：config.json.bak-first-run）"
+  cp -n "$USER_CONFIG" "$USER_CONFIG.bak-first-run" 2>/dev/null || true
+  set_user_kv electron "$ELECTRON"
+  set_user_kv nodeBinDir "$NEW_NODE_DIR"
+  set_user_kv systemDsh "$SYSTEM_DSH"
+  ok "已写回用户配置（备份：$USER_CONFIG.bak-first-run）"
 fi
 
 # ── 环境与启动 ─────────────────────────────────────────────────────────
-USERDATA="$(resolve_rel "$(config_value userDataDir || echo data-shell)")"
+# userDataDir 现在默认进用户目录（~/.local/share/dsh-desktop/data-shell），
+# 多用户互不干扰。先展开 ~，再交给 resolve_rel（它只懂绝对/相对，不懂 ~）。
+USERDATA_RAW="$(config_value userDataDir || echo '~/.local/share/dsh-desktop/data-shell')"
+case "$USERDATA_RAW" in
+  '~'|'~/'*) USERDATA_RAW="$HOME/${USERDATA_RAW#\~/}" ;;
+esac
+USERDATA="$(resolve_rel "$USERDATA_RAW")"
 TELEMETRY="$(config_value telemetryMode || echo DISABLED)"
 export PATH="$NEW_NODE_DIR:$PATH"
 export DSH_KERNEL_BIN="$SYSTEM_DSH"
