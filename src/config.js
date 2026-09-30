@@ -10,27 +10,45 @@
  * The launcher (`start-shell.sh`) reads the same file, so the shell and its
  * starter never drift apart.
  *
+ * ── Multi-user (Deepin / UOS) ────────────────────────────────────────────
+ * On a machine where several OS users can launch the shell, the file shipped
+ * next to the shell (e.g. `/opt/deepseek-harness-desktop/config.json`) is
+ * GLOBAL and must stay read-only: if two users edited it they would clobber
+ * each other, and on most installs only root can write under `/opt` anyway. So
+ * every per-user tweak is layered on top from `~/.config/dsh-desktop/config.json`
+ * (USER_CONFIG_PATH), which the shell itself also writes on first run. The
+ * merge order is DEFAULTS < shipped < user, so the user file wins.
+ *
  * @module config
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+import { writeConfigFile } from './config-file.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
-export const CONFIG_PATH = join(here, '..', 'config.json')
 export const APP_ROOT = join(here, '..')
+
+/** Shipped, read-only default config living next to the shell (e.g. /opt/.../config.json). */
+export const CONFIG_PATH = join(APP_ROOT, 'config.json')
+
+/** Per-user override config. Always user-writable; the shell writes here on first run. */
+export const USER_CONFIG_DIR = join(homedir(), '.config', 'dsh-desktop')
+export const USER_CONFIG_PATH = join(USER_CONFIG_DIR, 'config.json')
 
 const DEFAULTS = {
   launcher: {
     electron: '',
     systemDsh: '',
     nodeBinDir: '',
-    userDataDir: 'data-shell',
+    userDataDir: '~/.local/share/dsh-desktop/data-shell',
     telemetryMode: 'DISABLED',
   },
   kernel: {
-    homeSubdir: 'kernel-home',
+    homeSubdir: '~/.dsh',
     profile: 'web',
     noOpen: true,
     // 'auto' mirrors the official shell: use the native folder dialog, unless
@@ -90,26 +108,65 @@ function mergeSection(base, override) {
   return out
 }
 
-/** @type {typeof DEFAULTS | null} */
-let loaded = null
+/**
+ * Pure config builder: DEFAULTS < shipped < user. Exported so tests can drive it
+ * without touching real filesystem paths.
+ *
+ * @param {Record<string, any>} [shipped]
+ * @param {Record<string, any>} [user]
+ * @returns {typeof DEFAULTS}
+ */
+export function buildConfig(shipped = {}, user = {}) {
+  return /** @type {typeof DEFAULTS} */ (mergeSection(mergeSection(DEFAULTS, shipped), user))
+}
 
 /**
- * Loads and caches the merged configuration.
+ * Reads and JSON-parses a config file, returning `{}` if it is absent or broken
+ * (a broken user file must never crash the shell — it just gets ignored).
  *
- * @returns {typeof DEFAULTS}
+ * @param {string} path
+ * @returns {Record<string, any>}
+ */
+function loadJson(path) {
+  if (!existsSync(path)) return {}
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    console.warn(`config file could not be parsed, ignoring (${path}): ${error instanceof Error ? error.message : String(error)}`)
+    return {}
+  }
+}
+
+/** @type {ReturnType<typeof buildConfig> | null} */
+let loaded = null
+
+/** Test helper: drop the cached config so the next getConfig() re-reads files. */
+export function resetConfigCache() {
+  loaded = null
+}
+
+/**
+ * Loads and caches the merged configuration (shipped + per-user override).
+ *
+ * @returns {ReturnType<typeof buildConfig>}
  */
 export function getConfig() {
   if (loaded !== null) return loaded
-  let user = {}
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      user = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
-    } catch (error) {
-      console.warn(`config.json could not be parsed, using defaults: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  loaded = /** @type {typeof DEFAULTS} */ (mergeSection(DEFAULTS, user))
+  loaded = buildConfig(loadJson(CONFIG_PATH), loadJson(USER_CONFIG_PATH))
   return loaded
+}
+
+/**
+ * Writes the merged per-user config to USER_CONFIG_PATH atomically, creating the
+ * parent directory if needed. Used by the shell if it ever needs to persist a
+ * user-level override (first-run path resolution is done by the shell scripts).
+ *
+ * @param {string} contents - JSON string to write
+ * @returns {Promise<void>}
+ */
+export async function writeUserConfig(contents) {
+  await mkdir(USER_CONFIG_DIR, { recursive: true })
+  await writeConfigFile(USER_CONFIG_PATH, contents)
 }
 
 /**
