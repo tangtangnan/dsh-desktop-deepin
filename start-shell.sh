@@ -151,6 +151,23 @@ detect
 verify
 MISSING="$(missing_list)"
 
+# ── 首启进度可见化 ───────────────────────────────────────────────────────
+# 缺运行时且当前不在终端里（双击启动器启动，Terminal=false 无输出）时，
+# 借一个终端模拟器重跑自己：检测、下载、写回配置的全过程用户都看得见，
+# 避免「点了没反应、黑屏几分钟突然弹窗」的困惑。
+#   DSH_BOOTSTRAP_IN_TTY=1 是防死循环标记：终端里这一轮不再转开。
+#   运行时齐备的正常启动走不到这里，零变化、零弹框。
+if [ -n "$MISSING" ] && [ ! -t 0 ] && [ "${DSH_BOOTSTRAP_IN_TTY:-}" != "1" ]; then
+  for term in deepin-terminal x-terminal-emulator gnome-terminal konsole xfce4-terminal; do
+    if command -v "$term" >/dev/null 2>&1; then
+      # exec：终端进程直接替换为本脚本，窗口关闭即链条终止，无孤儿进程。
+      # -e 后接命令是这几类终端模拟器通用的执行约定。
+      exec env DSH_BOOTSTRAP_IN_TTY=1 "$term" -e bash "$SCRIPT_PATH"
+    fi
+  done
+  # 找不到任何终端模拟器的极简系统 → 保持现状：后台静默下载（日志仍写 shell.log）。
+fi
+
 if [ -n "$MISSING" ]; then
   say ""
   say "════════════════════════════════════════════════════════"
@@ -254,6 +271,16 @@ else
   say "  config   : $CONFIG （全局份；如需个性化请在 $USER_CONFIG 创建覆盖份）"
 fi
 say ""
+
+# 经终端转开的首启：提示用户这个窗口接下来的角色，避免误关。
+# Electron 的 stdout/stderr 仍并入日志文件；窗口保持打开只是承载进程，
+# 用户最小化即可，关闭它等于退出壳（和关闭主窗口等价）。
+if [ "${DSH_BOOTSTRAP_IN_TTY:-}" = "1" ]; then
+  say "✔ 运行时已就绪，正在启动主窗口……"
+  say "  本终端窗口将承载应用进程：可以最小化，请勿直接关闭"
+  say "  （关闭本窗口等同于退出 DeepSeek Harness Desktop）。"
+  say ""
+fi
 
 cd "$SHELL_DIR"
 exec "$ELECTRON" . >> "$USERDATA/shell.log" 2>&1
