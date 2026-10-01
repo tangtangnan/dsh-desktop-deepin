@@ -1,10 +1,22 @@
 # DeepSeek Harness Desktop · Deepin / UOS / Linux 版
 
-面向 Deepin / UOS / Linux x86_64 的 DeepSeek Harness 桌面壳。把命令行 agent
-运行时 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
+<p align="center">
+  <a href="https://github.com/westanke/dsh-desktop-deepin/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/westanke/dsh-desktop-deepin/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/westanke/dsh-desktop-deepin/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/westanke/dsh-desktop-deepin?include_prereleases"></a>
+  <a href="https://gitee.com/westanke/dsh-desktop-deepin/releases"><img alt="Gitee" src="https://img.shields.io/badge/Gitee-%E5%90%8C%E6%AD%A5-orange"></a>
+  <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Deepin%20%7C%20UOS-blueviolet">
+  <img alt="tests" src="https://img.shields.io/badge/tests-257%20passing-brightgreen">
+  <img alt="typecheck" src="https://img.shields.io/badge/tsc--noEmit-0%20errors-success">
+</p>
 
-> **状态**：可用。单测 253/253 通过、`tsc --noEmit` 零错误，已在 Deepin 25 上真机
-> 验证（窗口加载、内核就绪、托盘、菜单）。内核是上游开发预览版，配置面仍在变化。
+**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a ~106 KB deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors — or grab the `-offline` deb with everything bundled. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and 257 unit tests plus a real-kernel e2e keep it that way.
+
+面向 Deepin / UOS / Linux 的 DeepSeek Harness 桌面壳。把命令行 agent 运行时
+`dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
+
+> **状态**：可用。单测 257/257 通过、`tsc --noEmit` 零错误、内核 e2e 5/5，已在
+> Deepin 25 上真机验证（窗口加载、内核就绪、托盘、菜单）。内核是上游开发预览版，
+> 配置面仍在变化。
 
 ---
 
@@ -15,7 +27,8 @@
 
 | 格式 | 覆盖系统 | 说明 |
 |---|---|---|
-| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 装到 `/opt`，注册启动器与图标 |
+| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 在线版，约 106 KB；装到 `/opt`，注册启动器与图标，首启下载运行时 |
+| `*-offline-*.deb`（amd64） | 同上 | 离线版，约 150 MB，内嵌 Electron/Node 官方压缩包，**装完即用零下载**（见下文说明） |
 
 ### 安装包只有约 1 MB——因为运行时按需获取
 

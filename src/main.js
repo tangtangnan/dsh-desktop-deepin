@@ -167,6 +167,8 @@ let currentKernelPid = null
  * @param {string} why - where in the lifecycle the sweep runs, for the log line
  * @returns {Promise<void>}
  */
+// ═══ 1. 状态与收割（module state & orphan sweep）═══
+
 async function sweepOrphans(why) {
   if (familyMarker === '') return
   const report = await reapOrphans({
@@ -189,6 +191,8 @@ async function sweepOrphans(why) {
  *
  * @returns {{binPath: string, nodePath: string, runElectronAsNode: boolean, root: string, systemKernel: boolean}}
  */
+// ═══ 2. 内核解析与启动（kernel paths & lifecycle）═══
+
 function resolveKernelPaths() {
   const root = app.isPackaged ? join(process.resourcesPath, 'kernel') : join(here, '..', 'resources', 'kernel')
 
@@ -557,6 +561,8 @@ function attachKernelOutput(process_) {
  * @param {string} host
  * @returns {Promise<number>}
  */
+// ═══ 3. 就绪与端口（readiness & port）═══
+
 async function preferredPort(host) {
   // Deliberately always ephemeral — see the comment above this function. A
   // fixed port can be held by another dsh instance, and probing a stranger's
@@ -956,6 +962,8 @@ function persistWindowState(window) {
  *
  * @returns {{window: BrowserWindow, setKernel: (origin: string, token: string | null) => void}}
  */
+// ═══ 4. 窗口与渲染进程自愈（window & renderer recovery）═══
+
 function createWindow() {
   /** @type {string | null} */
   let origin = null
@@ -1181,6 +1189,8 @@ async function shutdown() {
  *
  * @returns {Promise<void>}
  */
+// ═══ 5. 托盘/菜单动作（tray & menu actions）═══
+
 async function restartKernel() {
   // `kernel` is the *supervisor*, not the process. The previous version of this
   // function assigned the process returned by `restart()` back into `kernel`,
@@ -1539,6 +1549,8 @@ async function installKeybindings(window) {
  *
  * @returns {Promise<void>}
  */
+// ═══ 6. 退出链（quit chain）═══
+
 async function requestQuit() {
   const exitPolicy = /** @type {'ask-always' | 'ask-if-busy' | 'never'} */ (
     getConfig().kernel?.exitPolicy ?? 'ask-always'
