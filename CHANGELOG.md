@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Orphan reaper: dead kernels no longer leak their MCP servers.** The kernel
+  launches MCP servers through `npm exec` chains, and when a kernel died
+  without a planned stop (a crash, or the market helper swapping the process),
+  every chain was re-parented to init and lived on forever — repeated restarts
+  accumulated a fresh crop of `excel-mcp-server` processes nobody owned. The
+  shell now injects an attribution marker (`ELECTRON_USER_DATA`, chosen
+  because the kernel strips `DSH_*` variables before handing its environment
+  to MCP children) into the kernel it spawns; the whole process family carries
+  it. After an unexpected exit, when restarts are exhausted, on user-initiated
+  restarts and at shutdown, the shell walks `/proc` and TERMs every marked
+  tree that can no longer reach a live kernel — escalating to SIGKILL after a
+  grace period. Processes that look like a kernel (`--profile` + `--port` on
+  their command line) are never reaped, so a second shell window's kernel and
+  an unsupervised replacement kernel survive the sweep; processes younger than
+  two seconds are always spared. The new `src/orphan-reaper.js` is covered by
+  24 unit tests, and the sweep was verified against real orphaned chains on a
+  live system.
+
 ### Changed
 
 - **Ports are now always assigned by the OS.** The shell used to prefer `19387`

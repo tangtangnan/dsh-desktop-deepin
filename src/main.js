@@ -19,6 +19,7 @@ import { KernelSupervisor } from './kernel-supervisor.js'
 import { errorPageHtml, loadingPageHtml } from './loading-page.js'
 import { getConfig } from './config.js'
 import { buildKernelArgs, buildKernelEnv, isSupportedNodeVersion } from './kernel-runtime.js'
+import { familyMarkerEnv, markerValueFor, reapOrphans } from './orphan-reaper.js'
 import { nodeBinaryName } from './node-runtime.js'
 import { httpProbe, waitForReady } from './readiness.js'
 import { shouldUseBrowsePicker } from './directory-picker.js'
@@ -146,6 +147,39 @@ let windowShortcutBindings = {}
  * @type {boolean}
  */
 let safeMode = false
+/**
+ * The marker value this shell's process family is attributed by, and the pid
+ * of the kernel launch currently being supervised.
+ *
+ * The marker rides `ELECTRON_USER_DATA` — see {@link module:orphan-reaper} for
+ * why that variable and not a `DSH_*` one. Both are set in `startKernel` and
+ * read by the reaper call sites.
+ *
+ * @type {string}
+ */
+let familyMarker = ''
+/** @type {number | null} */
+let currentKernelPid = null
+
+/**
+ * Best-effort sweep of the process trees a dead kernel left behind.
+ *
+ * @param {string} why - where in the lifecycle the sweep runs, for the log line
+ * @returns {Promise<void>}
+ */
+async function sweepOrphans(why) {
+  if (familyMarker === '') return
+  const report = await reapOrphans({
+    marker: familyMarker,
+    kernelPid: currentKernelPid,
+    log: (message) => console.log(`orphan-reaper[${why}]: ${message}`),
+  })
+  if (report.skipped === null && report.doomed.length > 0) {
+    console.log(
+      `orphan-reaper[${why}]: doomed ${report.doomed.length}, killed ${report.killed.length}, survived ${report.survived.length}`,
+    )
+  }
+}
 
 /**
  * Where the bundled kernel lives, packaged or not.
@@ -657,17 +691,29 @@ async function startKernel() {
     /** @returns {Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
     launchSpec: async () => {
       const port = await preferredPort(HOST)
+      const kernelEnv = buildKernelEnv({ parentEnv: process.env, dshHome, runElectronAsNode })
       return {
         nodePath,
         args: buildKernelArgs({ binPath, port, patchFiles }),
-        env: buildKernelEnv({ parentEnv: process.env, dshHome, runElectronAsNode }),
+        env: { ...kernelEnv, ...familyMarkerEnv(process.env, app.getPath('userData')) },
         cwd: app.getPath('home'),
       }
     },
   })
 
+  // From here on the family marker is known and the reaper can attribute
+  // processes; the marker value must match what the launch above injects (or
+  // what the launcher already provided), so it is derived the same way.
+  familyMarker = markerValueFor(process.env, app.getPath('userData'))
+
   const process_ = await supervisor.start()
   kernel = supervisor
+  currentKernelPid = process_.pid ?? null
+
+  // What the last launch left behind: a kernel that died unplanned — a crash,
+  // or the market helper swapping the process — cannot collect its MCP
+  // chains, so a sweep at every launch caps the leak at one generation.
+  void sweepOrphans('startup')
 
   // Stream the kernel's own output to the loading page, so a slow start shows
   // what it is doing instead of an opaque spinner. Batched: the kernel emits
@@ -679,6 +725,9 @@ async function startKernel() {
   // be told about: the window cannot recover by waiting. Record it and show
   // the error page rather than a silent blank surface.
   supervisor.onGaveUp(() => {
+    // The kernel is gone for good; nothing supervises its servants any more.
+    currentKernelPid = null
+    void sweepOrphans('gave-up')
     void writeCrashReport({
       userData: app.getPath('userData'),
       source: 'host',
@@ -692,8 +741,14 @@ async function startKernel() {
     }
   })
   // A single unexpected exit is still worth recording, even when a restart
-  // follows: the restart hides the crash, but the crash still happened.
+  // follows: the restart hides the crash, but the crash still happened. It is
+  // also the one moment the dead launch's MCP chains have escaped collection
+  // but are not yet replaced by the next launch — sweep here, before the
+  // backoff timer spawns a fresh kernel that would make every marked process
+  // look attributable again.
   process_.onUnexpectedExit(({ code, signal }) => {
+    currentKernelPid = null
+    void sweepOrphans('unexpected-exit')
     void writeCrashReport({
       userData: app.getPath('userData'),
       source: 'host',
@@ -1110,6 +1165,12 @@ async function shutdown() {
   const running = kernel
   kernel = null
   if (running !== null) await running.stop()
+  // The planned stop signalled the process group; anything that escaped it
+  // (the npm-exec MCP chains demonstrably do) still deserves a sweep. The
+  // kernel pid is already gone, so the reaper attributes against nothing and
+  // spares only processes that still look like kernels themselves.
+  currentKernelPid = null
+  await sweepOrphans('shutdown')
 }
 
 /**
@@ -1128,6 +1189,10 @@ async function restartKernel() {
   // shell apparently doing nothing.
   const supervisor = kernel
   if (supervisor === null) return
+  // The planned stop in `restart()` below signals the process group; sweep
+  // whatever escaped it before the fresh launch muddies attribution.
+  currentKernelPid = null
+  await sweepOrphans('restart')
 
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     startupBeganAt = Date.now()
@@ -1137,6 +1202,9 @@ async function restartKernel() {
   try {
     // Returns the freshly spawned process; the supervisor keeps ownership.
     const process_ = await supervisor.restart()
+    // The fresh launch is the family's new head: the reaper must attribute
+    // against it, or the next sweep would read the live family as orphans.
+    currentKernelPid = process_.pid ?? null
     const launchedArgs = process_.args ?? []
     const portIndex = launchedArgs.indexOf('--port')
     const port = Number(portIndex >= 0 ? launchedArgs[portIndex + 1] : NaN)
