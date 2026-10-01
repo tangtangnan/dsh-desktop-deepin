@@ -134,7 +134,7 @@ describe('detectRuntime', () => {
   }
 
   it('reports everything present and usable', () => {
-    const report = detectRuntime(happy)
+    const report = detectRuntime({ ...happy, platform: 'linux' })
     assert.equal(report.electron.ok, true)
     assert.equal(report.node.ok, true)
     assert.equal(report.dsh.ok, true)
@@ -142,7 +142,7 @@ describe('detectRuntime', () => {
   })
 
   it('lists what is missing', () => {
-    const report = detectRuntime({ ...happy, exists: existsOnly([join('/usr/bin', 'node')]) })
+    const report = detectRuntime({ ...happy, platform: 'linux', exists: existsOnly([join('/usr/bin', 'node')]) })
     assert.deepEqual(report.missing.sort(), ['dsh', 'electron'])
   })
 

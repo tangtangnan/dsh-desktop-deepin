@@ -73,6 +73,12 @@ function main() {
       '--no-fund',
       '--omit=dev',
       '--install-strategy=hoisted',
+      // The pinned rc kernel's tree carries rc-range peer specs that npm's
+      // resolver can pit against each other (observed: dsh-settings
+      // 0.1.1-rc.2 from an elder transitive vs the 0.2.0-rc.2 required here,
+      // ERESOLVE failing the whole install). The kernel ships with the tree
+      // it was tested against, so a peer conflict must not fail the payload.
+      '--legacy-peer-deps',
     ],
     { cwd: kernelDir, stdio: 'inherit', shell: process.platform === 'win32' },
   )
