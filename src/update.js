@@ -48,6 +48,10 @@ export async function checkForUpdatesAndNotify() {
 
   let autoUpdater
   try {
+    // 动态 import + @ts-ignore：electron-updater 是可选依赖（没装也能跑，
+    // 只有菜单点『检查更新』且 enabled=true 时才需要），不进 devDependencies，
+    // 否则 CI 的 npm ci 装不上它 typecheck 就红。
+    // @ts-ignore -- optional peer, absent from devDependencies by design
     ;({ autoUpdater } = await import('electron-updater'))
   } catch {
     await dialog.showErrorBox(
@@ -65,7 +69,8 @@ export async function checkForUpdatesAndNotify() {
   // types it as a union. The cast is the boundary where configuration meets
   // the library's contract.
   autoUpdater.setFeedURL({
-    provider: /** @type {import('builder-util-runtime').PublishProvider} */ (updates.provider),
+    // @ts-ignore -- builder-util-runtime types ship with electron-updater only
+    provider: updates.provider,
     owner: updates.owner,
     repo: updates.repo,
   })

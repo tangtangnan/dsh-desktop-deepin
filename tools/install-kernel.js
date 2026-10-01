@@ -179,7 +179,7 @@ function installLinuxPty() {
   console.log('swapping node-pty to 1.1.0-beta7 to recover Linux native source')
   execFileSync(
     'npm',
-    ['install', '--no-save', '--ignore-scripts', '--no-audit', '--no-fund', 'node-pty@1.1.0-beta7'],
+    ['install', '--no-save', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps', 'node-pty@1.1.0-beta7'],
     { cwd: kernelDir, stdio: 'inherit' },
   )
 }
@@ -268,6 +268,7 @@ function installShippedPlugins(plugins) {
         '--ignore-scripts',
         '--no-audit',
         '--no-fund',
+        '--legacy-peer-deps',
         `${name}@${pin.version}`,
       ],
       { cwd: kernelDir, stdio: 'inherit', shell: process.platform === 'win32' },
