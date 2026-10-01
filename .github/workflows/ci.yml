@@ -41,12 +41,8 @@ jobs:
         run: npm run scan:leaks
 
   e2e:
-    name: End-to-end
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
+    name: End-to-end (ubuntu)
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -59,8 +55,11 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
 
       # Verifies the pinned version and integrity as part of installing, so a registry
-      # serving something other than what upstream.lock.json names fails here. On
-      # macOS this also downloads the darwin Node runtime and checks its SHA-256.
+      # serving something other than what upstream.lock.json names fails here. This
+      # project ships Linux debs only, so the kernel e2e runs on the platform the
+      # artifacts are actually built for — the matrix previously ran win/mac, which
+      # tested platforms this shell does not target while the one it does had no
+      # end-to-end coverage at all.
       - name: Install the pinned kernel
         run: npm run kernel:install
 

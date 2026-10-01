@@ -59,6 +59,27 @@ jobs:
         # 第二个参数显式传版本号，保证包名与 tag 一致。
         run: bash tools/build-deb.sh ${{ matrix.arch }} ${{ steps.ver.outputs.version }}
 
+      - name: Assert deb permissions (EACCES regression guard)
+        # d81cb11 修过的坑：构建机上的限制性 mode（如 0600）若溜进包里，dpkg-deb
+        # --root-owner-group 只改属主不动 mode，装到 /opt 后普通用户读不到壳代码，
+        # Electron 直接被 permission denied 打崩。这里逐文件断言包内权限，从源头堵死。
+        run: |
+          set -euo pipefail
+          DEB=$(ls release/*.deb)
+          echo "检查 $DEB 包内文件权限…"
+          # 口径：DEBIAN/ 控制区之外的普通文件，「其他用户」三位（mode 第 8-10
+          # 位）必须是 r-- 或 r-x（至少有读位），否则视为 EACCES 隐患。
+          # 用 substr 而非正则：实测 gawk 对 `-(r--|r-x)$` 这类分组写法不可靠。
+          BAD=$(dpkg-deb -c "$DEB" | awk '
+            $6 !~ /^\.$|\.\/DEBIAN\// && $1 ~ /^-/ &&
+            substr($1, 8, 3) != "r--" && substr($1, 8, 3) != "r-x" {print $1, $6}')
+          if [ -n "$BAD" ]; then
+            echo "✖ 发现其他用户不可读的文件（会导致装到 /opt 后 EACCES）："
+            echo "$BAD"
+            exit 1
+          fi
+          echo "✅ 包内全部文件对其他用户可读"
+
       - name: Collect artifacts
         uses: actions/upload-artifact@v4
         with:

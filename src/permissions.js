@@ -38,15 +38,50 @@ const ALLOWED = new Set([
  * @param {import('electron').Session} session
  * @returns {void}
  */
+/**
+ * The shared decision for both handlers: allow the kernel's needed
+ * permissions, deny the rest.
+ *
+ * For `media` we re-inspect the request: audio-only passes (microphone),
+ * anything asking for a camera is denied — the allowlist is for the
+ * microphone, not the webcam. The details parameter is the minimal view both
+ * Electron handler signatures agree on — only `mediaTypes` matters here.
+ *
+ * @param {string} permission
+ * @param {string} requestingOrigin
+ * @param {{ mediaTypes?: string[] } | undefined} details
+ * @returns {boolean}
+ */
+const allow = (permission, requestingOrigin, details) => {
+  if (permission !== 'media') return ALLOWED.has(permission)
+  const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : []
+  // 没带 mediaTypes 的 media 请求按音频对待（内核语音输入走的是 audio）。
+  return mediaTypes.length === 0 || mediaTypes.every((t) => t === 'audio')
+}
+
+/**
+ * Allow kernel-needed permissions, deny the rest.
+ *
+ * Both handlers are set, because they cover different moments: the check
+ * handler answers synchronous `navigator.permissions.query` style lookups, and
+ * the request handler answers an actual request from the page.
+ *
+ * @param {import('electron').Session} session
+ * @returns {void}
+ */
 export function denyUnexpectedPermissions(session) {
-  const allow = (permission, requestingOrigin, details) => {
-    if (permission !== 'media') return ALLOWED.has(permission)
-    const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : []
-    // 没带 mediaTypes 的 media 请求按音频对待（内核语音输入走的是 audio）。
-    return mediaTypes.length === 0 || mediaTypes.every((t) => t === 'audio')
-  }
-  session.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) =>
-    allow(permission, requestingOrigin, details))
-  session.setPermissionRequestHandler((_webContents, permission, callback, details) =>
-    callback(allow(permission, _webContents?.getURL?.() ?? '', details)))
+  session.setPermissionCheckHandler(
+    (_wc, permission, requestingOrigin, details) =>
+      allow(permission, requestingOrigin, /** @type {{ mediaTypes?: string[] }} */ (details)),
+  )
+  session.setPermissionRequestHandler(
+    (_webContents, permission, callback, details) =>
+      callback(
+        allow(
+          permission,
+          _webContents?.getURL?.() ?? '',
+          /** @type {{ mediaTypes?: string[] }} */ (details),
+        ),
+      ),
+  )
 }

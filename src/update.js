@@ -60,7 +60,6 @@ export async function checkForUpdatesAndNotify() {
   // The published release feed. Mirrors the official shell's provider config,
   // but every value is read from config.json so the feed can be retargeted
   // without touching code.
-  const updates = getConfig().updates
   autoUpdater.autoDownload = Boolean(updates.autoDownload)
   // `provider` comes from config.json, so it is a plain string; electron-updater
   // types it as a union. The cast is the boundary where configuration meets

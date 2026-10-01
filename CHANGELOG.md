@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tsc --noEmit` passes again — CI's red "Type check" step is addressable.**
+  `src/permissions.js` carried four implicit-`any` parameters and `src/update.js`
+  declared `updates` twice in the same function; under `strict` + `checkJs` both
+  fail the type check, and since both files were already on `main`, every CI run
+  went red regardless of the 253 green unit tests. The permission decision is now
+  a typed module-level function, and the duplicated declaration is gone.
+- **The kernel e2e job runs on ubuntu, the platform this shell actually ships.**
+  The matrix previously listed `windows-latest` and `macos-latest` only — the one
+  platform this Linux-only project publishes for had no end-to-end coverage, while
+  two it explicitly does not target were tested on every push.
+- **A permissions assertion guards every deb build against the EACCES
+  regression.** Commit `d81cb11` fixed limited file modes (e.g. `0600`) leaking
+  into the package and crashing Electron for non-root users once installed under
+  `/opt`; nothing prevented a recurrence. `package-linux.yml` now unpacks the
+  built deb's listing and fails the build if any file outside `DEBIAN/` lacks an
+  other-user read bit (verified against both a healthy package and a deliberately
+  broken one locally). Repository-side file modes are normalised as well.
+
 ### Added
 
 - **Orphan reaper: dead kernels no longer leak their MCP servers.** The kernel
