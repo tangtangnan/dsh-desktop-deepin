@@ -176,7 +176,9 @@ detect() {
   # 目的是尽量复用机器上已有的运行时，避免无谓下载。glob 未匹配时保持原样、[ -x ] 会跳过。
   NODE_BIN="$(locate "${cfg_nodebin:+$cfg_nodebin/node}" node \
     /usr/local/bin/node /usr/bin/node /usr/local/nodejs/bin/node \
-    /usr/local/node/bin/node /opt/node*/bin/node /snap/bin/node \
+    /usr/local/node/bin/node /snap/bin/node \
+    /opt/node/bin/node /opt/nodejs/bin/node /opt/node-*/bin/node /opt/node*/bin/node \
+    /opt/apps/*/files/bin/node /opt/*/bin/node \
     /home/linuxbrew/.linuxbrew/bin/node \
     "${HOME}/.nvm/versions/node/"*/bin/node \
     "${HOME}/.fnm/node-versions/"*/installation/bin/node \
@@ -190,7 +192,8 @@ detect() {
     "$RUNTIME_DIR"/node-*/bin/node || true)"
   ELECTRON_BIN="$(locate "$cfg_electron" electron \
     /usr/bin/electron /usr/local/bin/electron /usr/lib/electron/electron \
-    /opt/electron/electron /opt/electron*/electron /snap/bin/electron \
+    /opt/electron/electron /opt/electron*/electron /opt/*/electron \
+    /opt/apps/*/files/bin/electron /snap/bin/electron \
     /usr/share/electron/electron \
     "${HOME}/.local/bin/electron" "${HOME}/.local/share/electron/"*/electron \
     "${HOME}/.cache/electron/"*/electron \
@@ -204,6 +207,7 @@ detect() {
   DSH_BIN="$(locate "$cfg_dsh" dsh \
     ${node_dir:+"$node_dir/dsh"} \
     /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
+    /opt/nodejs/bin/dsh /opt/node/bin/dsh /opt/*/bin/dsh \
     /snap/bin/dsh \
     "${HOME}/.local/bin/dsh" "${HOME}/.yarn/bin/dsh" \
     "${HOME}/.local/share/pnpm/dsh" \
