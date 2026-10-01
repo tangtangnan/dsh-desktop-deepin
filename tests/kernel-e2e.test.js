@@ -40,6 +40,18 @@ const binPath = join(
 const kernelPresent = existsSync(binPath)
 const STARTUP_BUDGET_MS = 180_000
 
+/**
+ * Prefers the Node runtime that `npm run kernel:install` laid beside the
+ * kernel (resources/kernel/node on unix) — the same runtime the packaged
+ * shell uses. Falls back to the test runner's own node.
+ *
+ * @returns {string | null}
+ */
+function pinnedNodePath() {
+  const candidate = join(repoRoot, 'resources', 'kernel', 'node')
+  return existsSync(candidate) ? candidate : null
+}
+
 describe(
   'kernel end-to-end',
   { skip: kernelPresent ? false : 'resources/kernel is absent — run npm run kernel:install' },
@@ -86,7 +98,7 @@ describe(
         const env = buildKernelEnv({ parentEnv: process.env, dshHome: home })
 
         kernel = new KernelProcess()
-        kernel.start({ nodePath: process.execPath, args, env, cwd: workspace })
+        kernel.start({ nodePath: pinnedNodePath() ?? process.execPath, args, env, cwd: workspace })
 
         assert.ok(kernel.pid !== undefined, 'the kernel should have a pid once spawned')
 
@@ -143,7 +155,7 @@ describe(
       const args = buildKernelArgs({ binPath, port, patchFiles: [patchPath] })
       const probe = new KernelProcess()
       probe.start({
-        nodePath: process.execPath,
+        nodePath: pinnedNodePath() ?? process.execPath,
         args: [args[0] ?? '', ...args.slice(1, -2), '--dump-config'].filter((a) => a !== '--port'),
         env: buildKernelEnv({ parentEnv: process.env, dshHome: home }),
         cwd: workspace,
