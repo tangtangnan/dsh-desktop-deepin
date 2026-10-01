@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -219,8 +220,11 @@ describe('installElectron', () => {
       fetchImpl: /** @type {any} */ (fetchOf(routes)),
       log: (message) => logs.push(message),
     })
-    const binaryName = process.platform === 'win32' ? 'electron.exe' : 'electron'
-    assert.equal(binary, join(testHome, '.dsh-desktop', 'runtime', `electron-${version}`, binaryName))
+    // installElectron's real contract is the *directory* it installed into:
+    // the binary inside is whatever the official archive ships (`electron` —
+    // Windows resolves the extension through PATHEXT, no `.exe` on disk).
+    const expectedDir = join(testHome, '.dsh-desktop', 'runtime', `electron-${version}`)
+    assert.equal(dirname(binary), expectedDir)
   })
 
   it('degrades to origin-only integrity when the manifest is unreachable', async () => {

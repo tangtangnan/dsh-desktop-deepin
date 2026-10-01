@@ -149,6 +149,7 @@ describe('detectRuntime', () => {
   it('treats Node 22.14 as missing, not merely old', () => {
     const report = detectRuntime({
       ...happy,
+      platform: 'linux',
       runVersion: versionsOf({
         [join('/usr/bin', 'electron')]: 'v33.3.0',
         [join('/usr/bin', 'node')]: 'v22.14.0',
@@ -162,6 +163,7 @@ describe('detectRuntime', () => {
   it('accepts a newer Electron major', () => {
     const report = detectRuntime({
       ...happy,
+      platform: 'linux',
       runVersion: versionsOf({
         [join('/usr/bin', 'electron')]: 'v44.0.0',
         [join('/usr/bin', 'node')]: 'v24.19.0',
@@ -174,6 +176,7 @@ describe('detectRuntime', () => {
   it('rejects an Electron older than the floor', () => {
     const report = detectRuntime({
       ...happy,
+      platform: 'linux',
       runVersion: versionsOf({
         [join('/usr/bin', 'electron')]: `v${MIN_ELECTRON_MAJOR - 1}.0.0`,
         [join('/usr/bin', 'node')]: 'v24.19.0',
@@ -186,6 +189,7 @@ describe('detectRuntime', () => {
   it('accepts any dsh, however new', () => {
     const report = detectRuntime({
       ...happy,
+      platform: 'linux',
       runVersion: versionsOf({
         [join('/usr/bin', 'electron')]: 'v33.3.0',
         [join('/usr/bin', 'node')]: 'v24.19.0',

@@ -98,18 +98,23 @@ describe('backupPath', () => {
 })
 
 describe('nextBackupPath', () => {
+  // node:path 的 join 在 win32 上把 '/' 当分隔符重建路径，所以夹具输入用
+  // 平台分隔符构造，断言只盯「文件名 + 序列后缀」这一平台无关的契约。
+  const base = join('p', 'x.yml')
+  const firstBackup = join('p', 'x.yml.bak-2026-09-29T00-00-00-000Z')
+
   it('takes the first free name', () => {
-    const path = nextBackupPath('/p/x.yml', () => false, new Date('2026-09-29T00:00:00Z'))
+    const path = nextBackupPath(base, () => false, new Date('2026-09-29T00:00:00Z'))
     assert.match(path, /x\.yml\.bak-/)
   })
 
   it('never overwrites an existing backup', () => {
-    const taken = new Set(['/p/x.yml.bak-2026-09-29T00-00-00-000Z'])
-    const path = nextBackupPath('/p/x.yml', (candidate) => taken.has(candidate), new Date('2026-09-29T00:00:00Z'))
-    assert.equal(path, '/p/x.yml.bak-2026-09-29T00-00-00-000Z.1')
+    const taken = new Set([firstBackup])
+    const path = nextBackupPath(base, (candidate) => taken.has(candidate), new Date('2026-09-29T00:00:00Z'))
+    assert.equal(path, `${firstBackup}.1`)
   })
 
   it('refuses to loop forever when every name is taken', () => {
-    assert.throws(() => nextBackupPath('/p/x.yml', () => true), /too many backups/)
+    assert.throws(() => nextBackupPath(base, () => true), /too many backups/)
   })
 })
