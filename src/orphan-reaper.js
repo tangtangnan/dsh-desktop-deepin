@@ -433,9 +433,13 @@ function pidAlive(pid) {
  * @returns {Promise<void>}
  */
 function delay(ms) {
+  // Note: *not* unref'd. The reaper runs while a crash is being handled —
+  // often the only live work in the process at that moment. An unref'd timer
+  // lets the event loop drain underneath a pending await, which on Node 22
+  // strands the test runner's promise ("Promise resolution is still pending
+  // but the event loop has already resolved"). The grace window is at most a
+  // couple of seconds; holding the loop open for it is harmless.
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    // Do not hold the event loop open purely to wait out a timeout.
-    timer.unref?.()
+    setTimeout(resolve, ms)
   })
 }
