@@ -18,7 +18,13 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 STAGE="$ROOT/debian"
 PKG_NAME="deepseek-harness-desktop"
-VERSION="$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '0.1.2')"
+# 版本号优先级：显式传入 > 环境变量 DEB_VERSION > package.json。
+# CI 打 tag 时会把 tag 名（去掉 v 前缀）传进来，保证 deb 文件名与 tag 永远一致，
+# 避免「tag 是 v0.1.7 但包名还写 0.1.2」这种错位。
+VERSION="${2:-${DEB_VERSION:-}}"
+if [ -z "$VERSION" ]; then
+  VERSION="$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '0.1.2')"
+fi
 OUTPUT_DIR="$ROOT/release"
 
 # ── 目标架构 ───────────────────────────────────────────────────────────

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=DeepSeek Harness Desktop
+GenericName=DeepSeek Harness 桌面壳
+Comment=DeepSeek Harness agent 运行时的桌面壳（首次启动会下载运行时）
+Exec=bash /opt/deepseek-harness-desktop/start-shell.sh
+Terminal=false
+Type=Application
+Icon=deepseek-harness-desktop
+StartupWMClass=DeepSeek Harness Desktop
+Categories=Development;Utility;

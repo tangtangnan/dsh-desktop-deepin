@@ -4,6 +4,11 @@ name: Package Linux
 # Electron / Node / dsh 运行时由最终用户首次启动时按需下载（国内镜像优先），
 # 见 tools/bootstrap.sh。因此这里用 dpkg-deb 手工打包，不走 electron-builder。
 # 同一个源码分别打 amd64 与 arm64 两种架构（运行时按 uname -m 自举下载对应包）。
+#
+# 打 v* tag 时：
+#   1. 用 tag 名作为版本号打包（保证 deb 文件名与 tag 一致）
+#   2. 挂到 GitHub Release
+#   3. 若配置了 GITEE_TOKEN，同步创建/更新 Gitee Release 并上传同样的附件
 
 on:
   push:
@@ -37,11 +42,22 @@ jobs:
 
       # 不下载内核 / Node / Electron：三者都在首次启动时按需获取（见 README）。
 
+      - name: Resolve version from tag
+        id: ver
+        # 打 tag 时用 tag 名（去掉 v 前缀）；手动触发时回退到 package.json。
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            v*) ver="${GITHUB_REF_NAME#v}" ;;
+            *)   ver="$(node -p "require('./package.json').version")" ;;
+          esac
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "Using version: ${ver}"
+
       - name: Package deb (${{ matrix.arch }}，壳代码约 100KB)
         # 方案 A：deb 只装壳代码，Electron/Node/dsh 首次启动按需下载。
         # 用 dpkg-deb 手工打包，不再用 electron-builder（它会把 Electron 打进包）。
-        # 传架构参数分别产出 amd64 / arm64 两个包。
-        run: bash tools/build-deb.sh ${{ matrix.arch }}
+        # 第二个参数显式传版本号，保证包名与 tag 一致。
+        run: bash tools/build-deb.sh ${{ matrix.arch }} ${{ steps.ver.outputs.version }}
 
       - name: Collect artifacts
         uses: actions/upload-artifact@v4
@@ -50,10 +66,70 @@ jobs:
           path: |
             release/*.deb
 
-      - name: Attach to release
+      - name: Attach to GitHub release
         # 仅在打 tag 时挂到 release 上；手动触发只留 artifact。
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release/*.deb
+
+  sync-gitee-release:
+    # 把 GitHub 上打好的 deb 同步一份到 Gitee Release，让国内用户也能直接下载。
+    # 需要仓库 Secrets 里配置 GITEE_TOKEN（Gitee 私人令牌，勾 projects 权限）；
+    # 未配置则跳过，不影响 GitHub 侧发布。
+    needs: package
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') && secrets.GITEE_TOKEN != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built debs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-artifacts-*
+          merge-multiple: true
+          path: release
+
+      - name: Create or update Gitee release and upload assets
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          OWNER="westanke"
+          REPO="dsh-desktop-deepin"
+          API="https://gitee.com/api/v5/repos/${OWNER}/${REPO}"
+
+          echo "== 查找 Gitee release (tag=$TAG) =="
+          release_id=$(curl -s "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log(j.id||'')}catch(e){console.log('')}})")
+
+          if [ -z "$release_id" ]; then
+            echo "  未找到，创建新 release"
+            resp=$(curl -s -X POST "${API}/releases?access_token=${GITEE_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$(printf '{"tag_name":"%s","name":"%s","body":"%s","target_commitish":"main"}' \
+                    "$TAG" "$TAG" "Linux deb（amd64 + arm64）。与 GitHub Release 同源，由 CI 自动同步。")")
+            release_id=$(echo "$resp" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log(j.id||'')}catch(e){console.log('')}})")
+          fi
+
+          if [ -z "$release_id" ]; then
+            echo "::error::无法创建或获取 Gitee release，跳过附件上传"
+            exit 1
+          fi
+          echo "  release id = $release_id"
+
+          echo "== 上传附件 =="
+          for f in release/*.deb; do
+            [ -f "$f" ] || continue
+            echo "  上传 $f"
+            if curl -s -f -X POST "${API}/releases/${release_id}/attach_files?access_token=${GITEE_TOKEN}" \
+                 -F "file=@${f}" >/dev/null; then
+              echo "    OK $(basename "$f")"
+            else
+              echo "    FAIL $(basename "$f")"
+            fi
+          done
+
+          echo "Gitee release 同步完成: https://gitee.com/${OWNER}/${REPO}/releases/tag/${TAG}"

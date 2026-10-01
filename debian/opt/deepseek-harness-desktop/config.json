@@ -1,0 +1,74 @@
+{
+  "_comment": "DSH 社区壳配置。改这里，不用动代码。路径用绝对路径；相对路径相对于本配置文件所在目录（即壳根目录）。所有 _comment_* 字段都是说明，代码会自动忽略，可随意删。",
+  "launcher": {
+    "_comment": "启动器段：start-shell.sh 读取这里决定如何拉起壳。改路径后 sh 会自动核对存在性。",
+    "electron": "",
+    "_comment_electron": "Electron 二进制绝对路径。留空=让 start-shell.sh 自动按 PATH→常见位置→私有 runtime 目录检测；仅当你想强制指定某个 Electron 时才填绝对路径（注意这是全局只读配置，多用户机器上填绝对路径会覆盖所有人的自动检测）。",
+    "systemDsh": "",
+    "_comment_systemDsh": "系统 dsh 可执行文件。留空=自动检测（PATH 或 /usr/local/bin/dsh 等）。sh 把它作为 DSH_KERNEL_BIN 传给壳，作为真正的内核来跑。",
+    "nodeBinDir": "",
+    "_comment_nodeBinDir": "系统 node 所在的 bin 目录。留空=自动检测并把检测到的目录加进 PATH，供系统内核模式用 node 跑 dsh。",
+    "userDataDir": "~/.local/share/dsh-desktop/data-shell",
+    "_comment_userDataDir": "壳的 Electron userData 目录。默认进当前用户目录（~ 展开为 $HOME），多用户互不干扰。相对路径以壳根目录为基准解析（不推荐，会落在全局 /opt 下被多用户抢占）。DSH_HOME 就在它下面的 kernel.homeSubdir 里，日志也落在这里。换它就等于整体换工作目录。",
+    "telemetryMode": "DISABLED",
+    "_comment_telemetryMode": "遥测开关，值传给环境变量 DSH_TELEMETRY_MODE。DISABLED 表示关闭内核上报。"
+  },
+  "kernel": {
+    "_comment": "内核段：决定 dsh 内核怎么起、DSH_HOME 落在哪。",
+    "homeSubdir": "~/.dsh",
+    "_comment_homeSubdir": "DSH_HOME 的位置。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用（如系统默认 /home/wangke/.dsh）。注意：绝对路径意味着本壳与任何使用同一目录的 dsh 实例共用内核 home——同一台机器若还有另一个 dsh web/桌面端在跑，两条飞书 bot 长连接会互相抢占，入站消息会丢。只在本机只有这一个 dsh 时这么设。",
+    "profile": "web",
+    "_comment_profile": "dsh 启动 profile，默认 web（带 Web UI 的桌面模式）。",
+    "noOpen": true,
+    "_comment_noOpen": "启动后是否不让 dsh 自己开浏览器。true 表示由壳自己加载页面，不抢默认浏览器。",
+    "directoryPicker": "auto",
+    "_comment_directoryPicker": "目录选择器策略。auto=跟随官方逻辑（Linux 上有 zenity 或 kdialog 就用原生对话框，两者都没有则自动降级为浏览模式）；browse=强制浏览模式；native=强制原生对话框（无 zenity/kdialog 的 Linux 上会静默失效，仅调试用）。",
+    "exitPolicy": "ask-always",
+    "_comment_exitPolicy": "退出确认策略。ask-always=每次退出都弹确认框（默认，因本壳无法像官方那样精确问 Host 是否有任务在跑，故取最保守档）；ask-if-busy=仅在页面观察到内核忙时才问（DOM 观察近似，非官方精确查询）；never=直接退出不询问。"
+  },
+  "supervisor": {
+    "_comment": "内核守护段：内核崩溃/退出时的自动重启策略（指数退避）。来自官方壳 restart-policy 的复刻。",
+    "maxRestartsInWindow": 5,
+    "_comment_maxRestartsInWindow": "滚动窗口内最多重试次数。超过就放弃，并弹错误页告诉你内核回不来了。",
+    "restartWindowMs": 600000,
+    "_comment_restartWindowMs": "重试计数的滚动窗口（毫秒）。这里是 10 分钟，窗口外的旧退出不计入次数。",
+    "baseDelayMs": 2000,
+    "_comment_baseDelayMs": "首次重试延迟（毫秒）。之后每次翻倍，直到撞到 maxDelayMs 封顶。",
+    "maxDelayMs": 30000,
+    "_comment_maxDelayMs": "重试延迟上限（毫秒）。翻倍到此即封顶，不再增长。",
+    "readinessTimeoutMs": 240000,
+    "_comment_readinessTimeoutMs": "单次启动等待内核就绪（打出 dsh web: 行）的超时。超时算这次启动失败、进入重试。实测本机内核启动耗时在 45~120+ 秒间波动（11 个插件 + 4 个 MCP 服务器串行初始化），原 90 秒不够，故放宽到 240 秒。"
+  },
+  "renderer": {
+    "_comment": "渲染段：Electron 渲染进程（也就是那个 Web 页面）崩溃时的自愈上限。",
+    "maxRecoveries": 3,
+    "_comment_maxRecoveries": "渲染进程崩溃后，窗口最多自动 reload 恢复的次数。超过说明页面真加载不出来，再刷只是死循环。",
+    "recoveryWindowMs": 60000,
+    "_comment_recoveryWindowMs": "恢复次数计数的滚动窗口（毫秒）。"
+  },
+  "splashMinMs": 3000,
+  "_comment_splashMinMs": "启动页最短展示时长（毫秒）。内核就绪后，启动页至少再停留这么久，好让你看清内核启动日志；0 表示就绪即切走。默认 3000。",
+  "tray": {
+    "_comment": "托盘段：系统托盘菜单的行为与文案。",
+    "summonAccelerator": "CommandOrControl+Shift+Space",
+    "_comment_summonAccelerator": "全局快捷键，一键召唤/隐藏主窗口。CommandOrControl 在 macOS 是 Cmd、其它系统是 Ctrl。",
+    "showBalance": false,
+    "_comment_showBalance": "是否在托盘菜单显示「余额 / 充值」入口。true 才会出现那一行。",
+    "rechargeUrl": "https://platform.deepseek.com/top_up",
+    "_comment_rechargeUrl": "充值页地址。点托盘里的余额/充值行会用浏览器打开它。"
+  },
+  "updates": {
+    "_comment": "更新段：自动更新源（electron-updater）。仅在打包版生效，源码运行会提示「打包版才检查」。",
+    "enabled": true,
+    "_comment_enabled": "是否启用自动更新总开关。",
+    "provider": "github",
+    "_comment_provider": "更新源类型，对应 electron-updater 的 provider。",
+    "owner": "citrusli2026",
+    "_comment_owner": "GitHub 仓库 owner（官方壳的发布账号）。",
+    "repo": "dsh-desktop",
+    "_comment_repo": "GitHub 仓库名。改这两项目标就换成你自己的发布源。",
+    "autoDownload": false,
+    "_comment_autoDownload": "检测到更新是否自动下载。false 表示只提示、不自动拉。"
+  },
+  "_comment_homeSubdir": "DSH_HOME 的位置。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用（如系统默认 /home/wangke/.dsh）。注意：绝对路径意味着本壳与任何使用同一目录的 dsh 实例共用内核 home——同一台机器若还有另一个 dsh web/桌面端在跑，两条飞书 bot 长连接会互相抢占，入站消息会丢。只在本机只有这一个 dsh 时这么设。"
+}

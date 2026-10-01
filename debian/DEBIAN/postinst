@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -uo pipefail
+INSTALL_DIR="/opt/dsh-desktop-deepin"
+BOOTSTRAP="$INSTALL_DIR/tools/bootstrap.sh"
+echo ""
+echo "DeepSeek Harness Desktop 已安装到 $INSTALL_DIR"
+echo ""
+if [ -x "$BOOTSTRAP" ]; then
+  echo "正在检查运行时依赖（Electron / Node / dsh）…"
+  echo ""
+  bash "$BOOTSTRAP" check || {
+    echo ""
+    echo "提示：缺少运行时依赖。自动下载："
+    echo "  bash $BOOTSTRAP install"
+    echo "或直接启动（首次启动也会自动补齐）："
+    echo "  bash $INSTALL_DIR/start-shell.sh"
+    echo ""
+  }
+fi
+exit 0

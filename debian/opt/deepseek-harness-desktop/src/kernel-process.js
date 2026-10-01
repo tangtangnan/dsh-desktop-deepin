@@ -1,0 +1,330 @@
+/**
+ * Starting and stopping the kernel child process.
+ *
+ * @module kernel-process
+ */
+
+import { execFile, spawn } from 'node:child_process'
+import { createServer } from 'node:net'
+import { LogBuffer, redact } from './log-redact.js'
+
+/**
+ * Options passed to `spawn` for a kernel launch.
+ *
+ * On Unix the child must lead its own process group: `stop()` then signals
+ * `-pid`, which reaches the kernel *and* the tools it spawned, without also
+ * signalling this Electron process. `spawn` does not do that by default — the
+ * child inherits the parent's group, `kill(-childPid)` fails with ESRCH, and
+ * only the kernel itself is torn down, leaving grandchildren orphaned.
+ *
+ * Windows walks the tree by PID with `taskkill /T` instead, so `detached`
+ * would only create a leftover console window.
+ *
+ * @param {object} options
+ * @param {string} options.cwd
+ * @param {Record<string, string>} options.env
+ * @param {string} [options.platform]
+ * @returns {import('node:child_process').SpawnOptions}
+ */
+export function buildSpawnOptions({ cwd, env, platform = process.platform }) {
+  return {
+    cwd,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    detached: platform !== 'win32',
+  }
+}
+
+/**
+ * Asks the OS for a free TCP port.
+ *
+ * There is an unavoidable gap between releasing the port here and the kernel binding it,
+ * during which something else could take it. That is why this is not the last word: the
+ * readiness probe has to see the kernel actually answering on the port before anything is
+ * shown, which closes the loop on whether the request was honoured.
+ *
+ * @param {string} [host]
+ * @returns {Promise<number>}
+ */
+export function findFreePort(host = '127.0.0.1') {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, host, () => {
+      const address = server.address()
+      if (address === null || typeof address === 'string') {
+        server.close(() => reject(new Error('could not determine a free port')))
+        return
+      }
+      const { port } = address
+      server.close(() => resolve(port))
+    })
+  })
+}
+
+/**
+ * A running kernel, or the record of one that has stopped.
+ *
+ * Instances are single-use: once stopped, a new one is created for the next launch. That
+ * is what lets `isRunning()` mean "this launch is still the current one" — the identity
+ * the readiness probe binds itself to.
+ */
+export class KernelProcess {
+  /** @type {import('node:child_process').ChildProcess | null} */
+  #child = null
+  /** @type {string[] | null} */
+  #args = null
+  /** @type {LogBuffer} */
+  #log
+  /** @type {Error | null} */
+  #failure = null
+  #exited = false
+  /** @type {number | null} */
+  #exitCode = null
+  /** @type {Array<(info: {code: number | null, signal: string | null}) => void>} */
+  #exitListeners = []
+  /** @type {Array<(line: string) => void>} */
+  #outputListeners = []
+  #stopping = false
+  /** @type {string | null} */
+  #webToken = null
+  /** @type {string} */
+  #pendingOutput = ''
+
+  /** @param {number} [logLimit] */
+  constructor(logLimit = 2000) {
+    this.#log = new LogBuffer(logLimit)
+  }
+
+  /**
+   * Spawns the kernel.
+   *
+   * The Node binary is invoked directly on the kernel's entry script rather than through
+   * the `dsh` shim npm writes. On Windows that shim is a `.cmd` file, and since the fix
+   * for CVE-2024-27980 Node refuses to spawn one without `shell: true` — which in turn
+   * would mean the command line is concatenated rather than passed as an argv, so a space
+   * or an `&` in the install path would break it. Neither problem exists if the script is
+   * simply handed to Node.
+   *
+   * @param {object} options
+   * @param {string} options.nodePath - the Node binary to run the kernel with
+   * @param {string[]} options.args - argument vector, from `buildKernelArgs`
+   * @param {Record<string, string>} options.env - environment, from `buildKernelEnv`
+   * @param {string} options.cwd - the workspace root the kernel starts in
+   * @returns {void}
+   */
+  start({ nodePath, args, env, cwd }) {
+    if (this.#child !== null) throw new Error('this kernel process was already started')
+
+    const child = spawn(nodePath, args, buildSpawnOptions({ cwd, env }))
+    this.#child = child
+    this.#args = args
+
+    // A spawn failure surfaces here and nowhere else. It is not thrown by `spawn`, and it
+    // does not reject anything — without this listener it is an unhandled error event,
+    // which is exactly the shape of "the process never appeared and nothing said why".
+    child.on('error', (error) => {
+      this.#failure = error
+      this.#exited = true
+      this.#log.push(`kernel failed to start: ${error.message}`)
+    })
+
+    child.on('exit', (code, signal) => {
+      this.#exited = true
+      this.#exitCode = code
+      this.#log.push(`kernel exited with code=${String(code)} signal=${String(signal)}`)
+
+      // Only an exit we did not ask for is worth telling anyone about. A kernel that dies
+      // after the window is already open is otherwise completely silent: the window stays
+      // up showing a page it can no longer reach.
+      if (!this.#stopping) {
+        for (const listener of this.#exitListeners) listener({ code, signal })
+      }
+    })
+
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk) => {
+      this.#log.push(String(chunk))
+      this.#emitLines(String(chunk))
+      // The kernel prints its per-launch web token exactly once, on this
+      // line. The LogBuffer above redacts it (`?token=[redacted]`), so the
+      // credential this launch needs is only ever captured here, against
+      // the raw chunk, before redaction.
+      this.#pendingOutput += String(chunk)
+      if (this.#webToken === null) {
+        const match = /dsh web:\s*https?:\/\/[^\s]+?\/\?token=([A-Za-z0-9_-]+)/.exec(this.#pendingOutput)
+        // The capture group is present whenever the match is, but the compiler
+        // cannot know that; `?? null` keeps the field's type honest.
+        if (match !== null) this.#webToken = match[1] ?? null
+      }
+      // Keep the pending window small: it only needs to span the one token
+      // line, which is short. Once captured it is no longer consulted.
+      if (this.#pendingOutput.length > 4096) this.#pendingOutput = this.#pendingOutput.slice(-512)
+    })
+    child.stderr?.setEncoding('utf8')
+    child.stderr?.on('data', (chunk) => {
+      this.#log.push(String(chunk))
+      this.#emitLines(String(chunk))
+    })
+  }
+
+  /**
+   * Splits a chunk into lines and hands the redacted ones to listeners.
+   *
+   * Redaction happens here rather than at the listener so the page can never
+   * receive a credential the log buffer would have hidden.
+   *
+   * @param {string} chunk
+   * @returns {void}
+   */
+  #emitLines(chunk) {
+    if (this.#outputListeners.length === 0) return
+    for (const line of redact(chunk).split(/\r?\n/)) {
+      if (line.trim() === '') continue
+      this.#emitOutput(line)
+    }
+  }
+
+  /** @returns {boolean} whether this launch is still alive */
+  isRunning() {
+    return this.#child !== null && !this.#exited
+  }
+
+  /**
+   * Registers a listener for an exit that was not requested.
+   *
+   * @param {(info: {code: number | null, signal: string | null}) => void} listener
+   * @returns {void}
+   */
+  onUnexpectedExit(listener) {
+    this.#exitListeners.push(listener)
+  }
+
+  /**
+   * Registers a listener for every line the kernel writes.
+   *
+   * This is what lets the startup screen show the kernel's own output: the
+   * user sees "loading plugin X", "MCP server ready" and so on, which turns an
+   * opaque wait into a visible one. Lines are already redacted before they
+   * reach the listener, so a token cannot leak into the page.
+   *
+   * @param {(line: string) => void} listener
+   * @returns {() => void} unsubscribe
+   */
+  onOutput(listener) {
+    this.#outputListeners.push(listener)
+    return () => {
+      const index = this.#outputListeners.indexOf(listener)
+      if (index >= 0) this.#outputListeners.splice(index, 1)
+    }
+  }
+
+  /** @param {string} line @returns {void} */
+  #emitOutput(line) {
+    for (const listener of this.#outputListeners) {
+      try {
+        listener(line)
+      } catch {
+        // A listener that throws must not take the kernel down with it.
+      }
+    }
+  }
+
+  /** @returns {number | undefined} */
+  get pid() {
+    return this.#child?.pid
+  }
+
+  /** @returns {string[] | null} the argument vector this launch was started with */
+  get args() {
+    return this.#args
+  }
+
+  /** @returns {number | null} */
+  get exitCode() {
+    return this.#exitCode
+  }
+
+  /** @returns {Error | null} the spawn failure, if the process never started */
+  get failure() {
+    return this.#failure
+  }
+
+  /** @returns {string} the captured output, redacted and bounded */
+  logText() {
+    return this.#log.text()
+  }
+
+  /**
+   * The kernel's per-launch web token, captured from raw stdout before the
+   * LogBuffer redacts it. Null until the token line has been printed (newer
+   * kernels gate the web surface behind it; older kernels print none and
+   * this stays null, which is the correct signal that no credential is
+   * needed).
+   *
+   * @returns {string | null}
+   */
+  webToken() {
+    return this.#webToken
+  }
+
+  /**
+   * Stops the kernel and everything it started.
+   *
+   * The kernel spawns children of its own — tool subprocesses, workers — and killing only
+   * the parent leaves those orphaned. On Windows the whole tree is taken down by PID with
+   * `taskkill /T`; addressing processes by image name instead would also kill any other
+   * Node process the user happens to be running. On Unix the child was spawned as its
+   * own process-group leader (see {@link buildSpawnOptions}), so a negative pid reaches
+   * the group.
+   *
+   * @param {object} [options]
+   * @param {number} [options.timeoutMs] - how long to wait for a graceful exit
+   * @returns {Promise<void>}
+   */
+  async stop({ timeoutMs = 5_000 } = {}) {
+    const child = this.#child
+    if (child === null || this.#exited) return
+    this.#stopping = true
+
+    const { pid } = child
+    if (pid === undefined) return
+
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+
+    if (process.platform === 'win32') {
+      await new Promise((resolve) => {
+        execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () =>
+          resolve(undefined),
+        )
+      })
+    } else {
+      // Negative pid signals the process group, so the kernel's own children go too.
+      try {
+        process.kill(-pid, 'SIGTERM')
+      } catch {
+        child.kill('SIGTERM')
+      }
+    }
+
+    await Promise.race([exited, delay(timeoutMs)])
+
+    if (!this.#exited) {
+      child.kill('SIGKILL')
+      await Promise.race([exited, delay(1_000)])
+    }
+  }
+}
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function delay(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    // Do not hold the event loop open purely to wait out a timeout.
+    timer.unref?.()
+  })
+}
