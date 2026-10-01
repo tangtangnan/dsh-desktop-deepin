@@ -84,3 +84,6 @@ npm-debug.log*
 .tsbuildinfo
 .tsdown-cache/
 *.tsbuildinfo
+
+# 竞品预警脚本的运行状态（本地生成，不入库）
+.watch-competitor-state.json

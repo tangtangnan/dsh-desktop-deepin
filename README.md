@@ -9,7 +9,7 @@
   <img alt="typecheck" src="https://img.shields.io/badge/tsc--noEmit-0%20errors-success">
 </p>
 
-**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a ~106 KB deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors — or grab the `-offline` deb with everything bundled. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and 257 unit tests plus a real-kernel e2e keep it that way.
+**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a ~106 KB deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors; an offline variant with everything bundled can be built locally for air-gapped machines. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and 257 unit tests plus a real-kernel e2e keep it that way.
 
 面向 Deepin / UOS / Linux 的 DeepSeek Harness 桌面壳。把命令行 agent 运行时
 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
@@ -28,7 +28,7 @@
 | 格式 | 覆盖系统 | 说明 |
 |---|---|---|
 | `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 在线版，约 106 KB；装到 `/opt`，注册启动器与图标，首启下载运行时 |
-| `*-offline-*.deb`（amd64） | 同上 | 离线版，约 150 MB，内嵌 Electron/Node 官方压缩包，**装完即用零下载**（见下文说明） |
+| `*-offline-*.deb`（自建） | 同上 | **不在 release 提供**。有内网/离线机需求时自己打：见下文「离线双通道」 |
 
 ### 安装包只有约 1 MB——因为运行时按需获取
 
@@ -330,7 +330,7 @@ bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 产物在 `release/`。**本地打包不会下载内核、Node 或 Electron**——这三样由最终用户
 运行时按需获取（见「下载与安装」），deb 里只有约 1 MB 的壳代码。
 
-**离线双通道**：给无法稳定访问网络的机器打全自带包——
+**离线双通道（自建，不在 release 提供）**：给无法稳定访问网络的机器打全自带包——
 
 ```sh
 # 1. 先把两个官方运行时压缩包放到 release/（npmmirror 或官方源均可）
