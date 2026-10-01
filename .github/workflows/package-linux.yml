@@ -108,13 +108,18 @@ jobs:
           REPO="dsh-desktop-deepin"
           API="https://gitee.com/api/v5/repos/${OWNER}/${REPO}"
 
+          # GitHub 的 runner 在境外，访问 gitee.com 偶发 SSL 握手失败（curl exit 35）
+          # 或超时。这里统一加重试与超时，避免偶发抖动让整个 job 变红。
+          CURL="curl -s --retry 3 --retry-delay 5 --retry-all-errors \
+                --connect-timeout 20 --max-time 120"
+
           echo "== 查找 Gitee release (tag=$TAG) =="
-          release_id=$(curl -s "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" \
+          release_id=$($CURL "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" \
             | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log(j.id||'')}catch(e){console.log('')}})")
 
           if [ -z "$release_id" ]; then
             echo "  未找到，创建新 release"
-            resp=$(curl -s -X POST "${API}/releases?access_token=${GITEE_TOKEN}" \
+            resp=$($CURL -X POST "${API}/releases?access_token=${GITEE_TOKEN}" \
               -H "Content-Type: application/json" \
               -d "$(printf '{"tag_name":"%s","name":"%s","body":"%s","target_commitish":"main"}' \
                     "$TAG" "$TAG" "Linux deb（amd64 + arm64）。与 GitHub Release 同源，由 CI 自动同步。")")
@@ -122,8 +127,10 @@ jobs:
           fi
 
           if [ -z "$release_id" ]; then
-            echo "::error::无法创建或获取 Gitee release，跳过附件上传"
-            exit 1
+            # Gitee 同步是「尽力而为」：GitHub 侧已发布成功，这里失败不该让整个
+            # 工作流变红误导人，只告警退出 0，之后可手动补同步。
+            echo "::warning::Gitee release 创建/获取失败（多为境外 runner 访问 Gitee 的网络抖动），已跳过附件上传；GitHub Release 不受影响，可稍后手动补同步"
+            exit 0
           fi
           echo "  release id = $release_id"
 
@@ -131,7 +138,7 @@ jobs:
           for f in release/*.deb; do
             [ -f "$f" ] || continue
             echo "  上传 $f"
-            if curl -s -f -X POST "${API}/releases/${release_id}/attach_files?access_token=${GITEE_TOKEN}" \
+            if $CURL -f -X POST "${API}/releases/${release_id}/attach_files?access_token=${GITEE_TOKEN}" \
                  -F "file=@${f}" >/dev/null; then
               echo "    OK $(basename "$f")"
             else
