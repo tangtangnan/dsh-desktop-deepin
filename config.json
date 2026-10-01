@@ -58,15 +58,15 @@
     "_comment_rechargeUrl": "充值页地址。点托盘里的余额/充值行会用浏览器打开它。"
   },
   "updates": {
-    "_comment": "更新段：自动更新源（electron-updater）。仅在打包版生效，源码运行会提示「打包版才检查」。",
-    "enabled": true,
-    "_comment_enabled": "是否启用自动更新总开关。",
+    "_comment": "更新段：本壳以 deb 形式发布，升级方式是下载新 deb 后 sudo apt install 重装，不走自动更新，所以 enabled 默认 false。下面 provider/owner/repo 仅为 electron-updater 的结构保留（代码要求这几个键存在）；enabled 改 true 且打包版装有 electron-updater 时才会真的去查对应 GitHub Releases。",
+    "enabled": false,
+    "_comment_enabled": "自动更新总开关。false 时托盘/菜单的「检查更新」只提示 deb 重装升级方式，不会发起网络请求。",
     "provider": "github",
     "_comment_provider": "更新源类型，对应 electron-updater 的 provider。",
-    "owner": "citrusli2026",
-    "_comment_owner": "GitHub 仓库 owner（官方壳的发布账号）。",
-    "repo": "dsh-desktop",
-    "_comment_repo": "GitHub 仓库名。改这两项目标就换成你自己的发布源。",
+    "owner": "westanke",
+    "_comment_owner": "GitHub 仓库 owner。仅 enabled=true 时才会被用到；默认已改成本仓库，避免去查别人的发布源。",
+    "repo": "dsh-desktop-deepin",
+    "_comment_repo": "GitHub 仓库名。仅 enabled=true 时才会被用到。",
     "autoDownload": false,
     "_comment_autoDownload": "检测到更新是否自动下载。false 表示只提示、不自动拉。"
   },

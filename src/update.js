@@ -31,6 +31,21 @@ export async function checkForUpdatesAndNotify() {
     return
   }
 
+  const updates = getConfig().updates
+  // 本壳的 Linux 发版形态是 deb，升级走 `sudo apt install ./新.deb` 重装；
+  // electron-updater 那条链路（指向官方壳的 GitHub Releases）对本壳不适用，
+  // config.json 的 updates.enabled 默认 false。关着时菜单点「检查更新」给出
+  // 明确指引而不是去查一个别人的仓库。
+  if (!updates.enabled) {
+    await dialog.showMessageBox({
+      type: 'info',
+      title: 'Check for updates',
+      message: `当前版本 v${app.getVersion()}。\n\n本壳以 deb 形式发布，不使用自动更新；升级请下载新版 deb 后执行：\n  sudo apt install ./DeepSeek-Harness-Desktop-<版本>-amd64.deb\n\n（下载地址见 README 的「下载与安装」章节。）`,
+      buttons: ['好的'],
+    })
+    return
+  }
+
   let autoUpdater
   try {
     ;({ autoUpdater } = await import('electron-updater'))

@@ -246,6 +246,13 @@ say "  node     : $NODE_BIN"
 say "  dsh      : $SYSTEM_DSH"
 say "  DSH_HOME : $DSH_HOME"
 say "  log      : $USERDATA/shell.log"
+# 说明当前实际生效的配置文件：用户覆盖份存在时它优先，否则用全局份。
+# 改配置要改「生效的那份」，写在这里让人不用翻代码就知道。
+if [ -f "$USER_CONFIG" ]; then
+  say "  config   : $USER_CONFIG （用户覆盖份，优先生效；要改配置改这份）"
+else
+  say "  config   : $CONFIG （全局份；如需个性化请在 $USER_CONFIG 创建覆盖份）"
+fi
 say ""
 
 cd "$SHELL_DIR"

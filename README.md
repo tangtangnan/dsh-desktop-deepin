@@ -4,23 +4,7 @@
 运行时 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
 
 > **状态**：可用。单测 229/229 通过，已在 Deepin 25 上真机验证（窗口加载、内核就绪、
-> 托盘、菜单、桌面工具浮层）。内核是上游开发预览版，配置面仍在变化。
-
----
-
-## 这个项目借了谁的力
-
-本仓库是**站在三个项目肩膀上**的社区整合，不是原创。按实际借鉴关系列清楚：
-
-| 项目 | 借鉴了什么 | 链接 |
-|---|---|---|
-| **deepseek-ai/deepseek-harness** | 内核 `dsh` 本体、Web UI、插件机制。所有 agent 能力（模型、工具、会话、权限）都来自它 | <https://github.com/deepseek-ai/deepseek-harness> |
-| **sleep2agi/DeepSeek-Harness-Desktop** | 本仓库的**代码基线**。窗口安全策略、就绪探测、进程树回收、日志脱敏、打包流程都源自这份社区壳 | <https://github.com/sleep2agi/DeepSeek-Harness-Desktop> |
-| **citrusli2026/dsh-desktop** | 官方桌面端的行为参照：菜单/托盘/安全模式/退出确认的**设计意图**来自它的实现，以及 UOS/Deepin 适配经验（Issue #73） | <https://github.com/citrusli2026/dsh-desktop> |
-| **anywhere-labs/dsh-desktop** | Linux deb 打包工艺参照：其 PR #1120 实测出「`dpkg -i` 缺依赖失败，须用 `apt install ./x.deb`」，本 README 直接采用该结论 | <https://github.com/anywhere-labs/dsh-desktop> |
-
-`deepseek-ai/deepseek-harness` 官方 `apps/desktop` 的实现细节也作为行为基准被对照，
-但它**不发布 Linux 产物**，且其私有发布单元（见下）无法获取。
+> 托盘、菜单）。内核是上游开发预览版，配置面仍在变化。
 
 ---
 
@@ -172,22 +156,6 @@ dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
 - **系统内核模式**：`launcher.systemDsh` 指向本机 `dsh`，壳用它作为内核，不下载 bundled 版本。
 - **`~` 展开**：`kernel.homeSubdir` 支持 `~/.dsh` 写法（Node 不认 `~` 是绝对路径，必须显式展开）。
 
-### 网页内桌面工具
-
-浮动面板 **桌面工具**，由插件
-[`plugins/dsh-deepin-controls`](plugins/dsh-deepin-controls) 提供，通过内核的
-`dsh.bundle.patch` 机制挂载（与官方桌面端挂自己控件的方式相同，不依赖其私有包）。
-
-六项动作全部镜像托盘已有能力，页面未获得额外权限：
-
-| 动作 | 需确认 |
-|---|---|
-| 重启内核 / 检查更新 / 开机自启 / 关于 / 隐藏窗口 | 否 |
-| 退出 | **是** |
-
-安全性：页面只能传**动作名**，主进程在 `src/desktop-commands.js` 的白名单里查，
-其余一律拒绝；回推给页面的状态经脱敏，只含 `phase`/`busy`/`launchAtLogin`/`safeMode`。
-
 ### 安全模式
 
 插件崩到内核起不来时，壳自己也进不去、无法卸载插件——死锁。安全模式是这个死锁的出口：
@@ -196,14 +164,14 @@ dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
 - 用户 patch 层**备份改名**而非改写：`cordis.patch.yml` → `cordis.patch.yml.bak-<UTC>`
 - **不持久化**：恢复动作不是偏好，下次正常启动插件自动回来
 
-三个入口都能触发：托盘菜单、应用菜单、网页浮层。实现见 `src/safe-mode.js`。
+托盘菜单与应用菜单两个入口都能触发。实现见 `src/safe-mode.js`。
 
 ### 安全策略
 
 | 项 | 实现 | 说明 |
 |---|---|---|
 | 导航白名单 | `src/window-policy.js` | 仅精确 origin 可导航；外链限 http/https 交系统浏览器 |
-| 渲染进程权限全拒 | `src/permissions.js` | 摄像头/麦克风/通知/剪贴板一律拒绝 |
+| 渲染进程权限白名单 | `src/permissions.js` | 仅放行内核需要的麦克风（纯音频）、通知、剪贴板；摄像头等一律拒绝 |
 | 沙箱与隔离 | `src/window-policy.js` | `contextIsolation` + 无 Node 集成 |
 | 日志脱敏 | `src/log-redact.js` | 进缓冲区即脱敏，超限丢弃并计数 |
 | 配置原子写 | `src/config-file.js` | 临时文件 + rename，加文件锁（陈旧锁可破） |
@@ -213,8 +181,20 @@ dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
 
 ## 配置
 
-所有可调项集中在 [`config.json`](config.json)，改它不用动代码。每个键旁边都有
-`_comment_*` 中文说明，这里列出常用项：
+所有可调项集中在 `config.json`，改它不用动代码。每个键旁边都有 `_comment_*`
+中文说明，这里列出常用项：
+
+**配置文件有两份，改「生效的那份」**（`start-shell.sh` 启动横幅里也会打印当前
+用的是哪份）：
+
+| 位置 | 权限 | 何时用 |
+|---|---|---|
+| `/opt/deepseek-harness-desktop/config.json` | root 只读 | **全局默认**，deb 安装自带，所有人共用 |
+| `~/.config/dsh-desktop/config.json` | 用户可写 | **每用户覆盖份**，优先生效 |
+
+规则：读取顺序是**用户覆盖份 → 全局份**，键级合并（用户份有该键就用用户份的）。
+多用户机器上**不要改全局份**（普通用户也改不动），把要改的键写进自己的覆盖份即可；
+首次启动壳会自动创建覆盖份并把检测到的运行时路径写进去。改完重启壳生效。
 
 ### `launcher` —— 怎么把壳拉起来
 
@@ -266,6 +246,9 @@ dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
 ---
 
 ## 环境要求
+
+**只支持 Linux**（Deepin / UOS / Debian 系）。**Windows 与 macOS 不做安装包**——
+本仓库不发布这两个平台的任何产物，也别提 issue 要。
 
 **跑打包版**：本身无强制要求——缺失的运行时会被自动检测并下载（见上方「下载与安装」）。
 但为了避免首次启动的大下载，机器上最好已有：
@@ -362,6 +345,22 @@ bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 **纯 shell 例外**：`tools/bootstrap.sh` 刻意不用 Node 写。它负责「检查 Node 在不在并把它装上」，
 如果它自己依赖 Node，Node 缺失时就启动不了——自举死循环。所以只用
 bash + curl/wget + tar/unzip，这三样在 Debian/UOS 基础系统里必定存在。
+
+---
+
+## 这个项目借了谁的力
+
+本仓库是**站在几个项目肩膀上**的社区整合，不是原创。按实际借鉴关系列清楚：
+
+| 项目 | 借鉴了什么 | 链接 |
+|---|---|---|
+| **deepseek-ai/deepseek-harness** | 内核 `dsh` 本体、Web UI、插件机制。所有 agent 能力（模型、工具、会话、权限）都来自它 | <https://github.com/deepseek-ai/deepseek-harness> |
+| **sleep2agi/DeepSeek-Harness-Desktop** | 本仓库的**代码基线**。窗口安全策略、就绪探测、进程树回收、日志脱敏、打包流程都源自这份社区壳 | <https://github.com/sleep2agi/DeepSeek-Harness-Desktop> |
+| **citrusli2026/dsh-desktop** | 官方桌面端的行为参照：菜单/托盘/安全模式/退出确认的**设计意图**来自它的实现，以及 UOS/Deepin 适配经验（Issue #73） | <https://github.com/citrusli2026/dsh-desktop> |
+| **anywhere-labs/dsh-desktop** | Linux deb 打包工艺参照：其 PR #1120 实测出「`dpkg -i` 缺依赖失败，须用 `apt install ./x.deb`」，本 README 直接采用该结论 | <https://github.com/anywhere-labs/dsh-desktop> |
+
+`deepseek-ai/deepseek-harness` 官方 `apps/desktop` 的实现细节也作为行为基准被对照，
+但它**不发布 Linux 产物**，且其私有发布单元（见下）无法获取。
 
 ---
 
