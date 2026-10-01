@@ -80,7 +80,9 @@ jobs:
     # 未配置则跳过，不影响 GitHub 侧发布。
     needs: package
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') && secrets.GITEE_TOKEN != ''
+    # 注意：job 级 if 里不能用 secrets 上下文（Actions 限制），
+    # 所以这里只判断 tag，令牌是否配置放到步骤内部检查。
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +99,11 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # 未配置 GITEE_TOKEN 就优雅跳过，不影响 GitHub 侧发布。
+          if [ -z "${GITEE_TOKEN:-}" ]; then
+            echo "未配置 GITEE_TOKEN，跳过 Gitee 同步（GitHub Release 不受影响）"
+            exit 0
+          fi
           OWNER="westanke"
           REPO="dsh-desktop-deepin"
           API="https://gitee.com/api/v5/repos/${OWNER}/${REPO}"
