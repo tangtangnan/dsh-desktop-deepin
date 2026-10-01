@@ -25,9 +25,27 @@ All notable changes to this project are documented here. The format follows
   built deb's listing and fails the build if any file outside `DEBIAN/` lacks an
   other-user read bit (verified against both a healthy package and a deliberately
   broken one locally). Repository-side file modes are normalised as well.
+- **Package metadata points at this repository, not the upstream baseline.**
+  `homepage`, `repository.url`, `bugs.url` and `author` in `package.json` were
+  inherited from `sleep2agi/DeepSeek-Harness-Desktop`, so a "report a problem"
+  click would open someone else's issue tracker. They now name
+  `westanke/dsh-desktop-deepin`. The dead electron-builder configuration
+  (`win`/`nsis`, `mac`/`dmg`/`entitlements`, `AppImage`, `pack`, `dist:win`,
+  `dist:mac`) is removed — this project ships Linux debs only — and
+  `prepack:app` now runs the type check before packaging. `version` is aligned
+  with the latest tag (v0.2.3).
 
 ### Added
 
+- **Downloads are checksum-verified on both install paths.** The shell-side
+  installer (`src/runtime-install.js`) verified Node but trusted the HTTPS
+  origin for Electron, the largest and therefore most attractive component;
+  it now fetches the Electron release's `SHASUMS256.txt` (both China mirrors
+  sync it) and refuses a substituted archive, degrading to origin-only
+  integrity — loudly — when a mirror serves no manifest. The pure-shell
+  bootstrap (`tools/bootstrap.sh`) verified nothing for either runtime; it now
+  runs the same manifest check for Node and Electron (verified live: a clean
+  download passes, a single flipped byte is rejected).
 - **Orphan reaper: dead kernels no longer leak their MCP servers.** The kernel
   launches MCP servers through `npm exec` chains, and when a kernel died
   without a planned stop (a crash, or the market helper swapping the process),
@@ -46,141 +64,63 @@ All notable changes to this project are documented here. The format follows
   24 unit tests, and the sweep was verified against real orphaned chains on a
   live system.
 
-### Changed
+## [0.2.3] — 2026-10-01
 
-- **Ports are now always assigned by the OS.** The shell used to prefer `19387`
-  (the official default) and fall back to a free port when it was taken — but
-  the readiness probe kept using the original origin, so it ended up checking
-  *another* dsh instance's kernel. That kernel gates its web surface behind its
-  own per-launch token, the probe carried a different one, every attempt came
-  back 401, and startup failed with "the kernel did not start responding in
-  time" while the real kernel was healthy on the port it had been given. An
-  OS-assigned port makes the collision impossible.
-- **The OS menu bar is kept instead of removed.** `Menu.setApplicationMenu(null)`
-  in `createWindow` is replaced by a real menu built by `src/app-menu.js`:
-  应用 / 文件 / 编辑 / 视图 / 窗口. The official shell documents that Linux keeps
-  the application and Edit menus, so removing the bar contradicted the behaviour
-  this shell mirrors. The first application-menu item opens Electron's native
-  About panel (icon, product name, installed version).
-- **DevTools toggles on F12 and Ctrl+Shift+I**, registered as hidden menu items,
-  which is how the official shell exposes them in packaged builds.
-- **The window appears before the kernel starts.** The old order was
-  `await startKernel()` then `createWindow()`, so a cold start meant staring at
-  nothing until the kernel was up. `createWindow` now returns a handle and the
-  endpoint is injected later via `setKernel(origin, token)`; navigation policy,
-  window-open classification and renderer recovery all read a closure, and
-  refuse external navigation entirely until the origin is known.
-- **The loading page advances in place.** Each stage change used to call
-  `loadURL`, which rebuilt the document: the elapsed counter reset and the early
-  stages flashed by unreadably. `src/loading-page.js` now exposes
-  `window.__dshStage()` / `window.__dshLog()` and the main process updates the
-  text. Its inline script also needed `script-src 'unsafe-inline'` in the page's
-  CSP — without it the hooks were never defined and every update was silently
-  dropped.
-- **`kernel.homeSubdir` accepts `~`.** `path.isAbsolute('~/.dsh')` is `false`, so
-  the value was treated as relative and joined onto `userData`, producing a
-  literal directory named `~`. The kernel then started against an empty home and
-  none of the user's plugins loaded.
-- **`supervisor.readinessTimeoutMs` is actually read.** It was documented but
-  never passed to `waitForReady`, so the hard-coded 90 s always won. Measured
-  startup on this machine ranges 45–120+ s (plugins and MCP servers initialise
-  serially), so the value is now 240 s and genuinely applied.
-- **The packaging step no longer fetches the kernel or Node.** Both are obtained
-  at run time by the user's machine instead, which is what keeps the deb near
-  1 MB.
+### 新增
 
-### Added
+- **首启进度可见化。** 在缺运行时且无终端的机器上，`start-shell.sh` 会转开
+  `deepin-terminal`（依次降级 `x-terminal-emulator` → gnome-terminal → konsole →
+  xfce4-terminal）重跑自身：检测、镜像测速、下载、配置回填全程可见，不再是对着
+  静默等待。`DSH_BOOTSTRAP_IN_TTY=1` 防止转开循环。
+- **权限白名单。** 渲染进程放行麦克风（audio-only 的 `media`）、通知、剪贴板
+  读取/写入；摄像头与其余权限仍然默认拒绝。
+- **`bootstrap.sh` 首要搜索 `/opt`**（含玲珑布局 `/opt/apps/*/files`），并覆盖
+  nvm/fnm/volta/asdf/n/pnpm/yarn/snap/brew——机器上已有的运行时直接复用，不下载。
 
-- `src/runtime-doctor.js` / `src/runtime-install.js` / `tools/doctor.js` —
-  runtime discovery and acquisition. Detection tries the configured path, then
-  `PATH`, then conventional locations. Missing pieces download from China
-  mirrors first (`npmmirror.com`, `mirrors.huaweicloud.com`) into
-  `~/.dsh-desktop/runtime`, with the Node archive checked against the published
-  SHA-256, the destination written via a `.partial` rename, and the resolved
-  paths written back to `config.json` (backed up first). Exposed as
-  `npm run doctor` and `npm run doctor:install`.
-- `tools/bootstrap.sh` — the same checks in **pure shell**, deliberately. Its job
-  is to find Node and install it when absent, so it cannot itself require Node:
-  that would be a bootstrap cycle. It uses only bash plus curl/wget and
-  tar/unzip, all of which a Debian/UOS base system has. Modes: `check`,
-  `install`, `run`.
-- `src/app-menu.js` — the application menu, including the About panel.
-- `src/safe-mode.js` — starts the kernel with the user's third-party bundles
-  disabled and sets their patch layer aside (`cordis.patch.yml` →
-  `cordis.patch.yml.bak-<UTC>`), following the official recovery mechanism.
-  Deliberately **not persisted**: it is a recovery action, so a normal restart
-  brings the plugins back. Reachable from the tray, the application menu and the
-  in-page controls.
-- `src/desktop-commands.js` — the allowlist of desktop actions the in-page
-  controls may request, plus the state pushed back to the page. A page sends an
-  action *name* only; anything not on the list is refused.
-- `plugins/dsh-deepin-controls` — a floating 桌面工具 panel inside the web UI
-  mirroring the tray's actions, mounted through the kernel's
-  `dsh.bundle.patch` mechanism.
-- `src/directory-picker.js` — decides whether the native folder dialog can be
-  used. The official shell falls back to browse mode when Linux has neither
-  `zenity` nor `kdialog`, since Electron's native dialog shells out to one of
-  them and silently does nothing without it. The probe is a pure function; the
-  result feeds `buildShellPatch({ useBrowseDirectoryPicker })`.
-- `src/config-file.js` — `atomicWriteFile` (write a sibling temp file, rename
-  over the target) and `withFileLock` (an advisory `<target>.lock` directory,
-  broken when stale). Two files this shell writes used to be written with a
-  plain `writeFile`, which is not atomic.
-- `src/diagnostics.js` — crash reports. The official shell writes them to the
-  platform log directory — `logs` under `userData` on Linux and Windows —
-  named `crash-<UTC>-<source>.log`, keeping the most recent ten. Replaces the
-  unbounded `kernel-exit.log` and `startup-error.log`.
-- `src/permissions.js` — denies every web permission. Without a handler
-  Chromium prompts for camera, microphone and notifications on behalf of a page
-  that is the kernel's web UI, not shell code.
-- `src/window-state.js` — remembers the window's size and position under
-  `userData`, and reuses a saved position only when enough of the window would
-  still land on a connected display. A monitor unplugged since the last launch
-  no longer strands the window off-screen.
-- `src/shortcuts.js` — key bindings. Overrides live in
-  `userData/keybindings.json`, separate from `DSH_HOME`. Linux dispatches
-  through the DOM rather than intercepting the keystroke before the page sees
-  it, which is what the official shell documents and what keeps editing and IME
-  input working.
-- `src/exit-guard.js` — whether quitting should prompt first, as a declared
-  policy (`ask-always` / `ask-if-busy` / `never`). **Differs from upstream by
-  necessity**: the official shell asks its Host what quitting would interrupt
-  over a private IPC channel belonging to its private Desktop Host package.
-  This shell has no such channel, so it cannot know exactly, and defaults to
-  always asking instead of pretending otherwise.
-- `kernel.directoryPicker` (`auto` / `browse` / `native`) and
-  `kernel.exitPolicy` (`ask-always` / `ask-if-busy` / `never`) in `config.json`.
-- `splashMinMs` — a floor on how long the loading page stays up after the kernel
-  is ready, so its log pane can actually be read (`0` disables it).
-- Window geometry is remembered across launches, and every write of a shell
-  configuration file is atomic and lock-protected.
+### 修复
 
-### Fixed
+- **时区兜底。** `/etc/timezone` 为 `Asia/Beijing`、`PRC` 等 Chromium 不认的名字时，
+  开窗前映射为 `Asia/Shanghai`。
+- **Gitee 同步容忍跨境 TLS 抖动**：带重试与超时；同步失败只告警，不再拖红发布流水线。
 
-- **`KernelSupervisor` methods were called on a `KernelProcess`.** The tray's
-  "restart kernel" item did nothing: `restartKernel` assigned the process
-  returned by `restart()` back into the `kernel` variable, so the next restart
-  called `restart()` on an object that has no such method, and the throw was
-  swallowed by a bare `catch`. `restart()` and `markReady()` live on the
-  supervisor; `isRunning()`, `webToken()` and `args` live on the process.
-- **The restart probe did not carry the launch token**, so in system-kernel mode
-  every probe after a restart came back 401 and the window sat on "waiting for
-  the kernel" forever. The restart path now uses the same probe as the first
-  launch.
-- **`tray.notify` did not exist.** The completion notification threw into the
-  preload's `try/catch` every time, so the feature was silently dead. Implemented
-  with a tray balloon and an Electron `Notification` fallback.
-- **`kernel.logText()` was called on the supervisor**, which has no such method;
-  it lives on the process (`kernel.current`). A startup failure raised a second
-  error while reporting the first.
-- **`globalShortcut` was referenced without being loaded.** `tray.js` reaches
-  Electron through `loadElectron()` on purpose (so its pure parts stay testable
-  under plain Node); that one call site used the bare global, so the summon
-  shortcut never registered.
-- `src/loading-page.js` and `src/error-page` CSP now both allow their inline
-  scripts.
-- Type checking is clean across the whole repository, which is how the five bugs
-  above were found: they had all been dismissed as pre-existing noise.
+## [0.2.1] — 2026-10-01
+
+### 新增
+
+- **arm64 deb。** 打包流水线从同一份源码产出 `amd64` 与 `arm64` 两个 deb（deb 只含
+  壳代码，运行时首启按架构下载），并发布到 GitHub 与 Gitee 两侧 Release。
+- **deb 版本号取自 tag**，终结早期「tag 是 v0.1.7、文件名却是 0.1.2」的错位。
+- **多用户配置分层。** `/opt` 下的发行配置只读、全局共享；每用户覆盖份在
+  `~/.config/dsh-desktop/config.json`，按键合并（DEFAULTS < 发行份 < 用户份）。
+  自举检测到的运行时路径只写用户份，不碰全局份。
+
+### 修复
+
+- **限制性文件权限不再打断安装后的应用**：打包前对构建树 `chmod -R a+rX`，普通用户
+  能真正读到 `/opt/.../src`（此前的 EACCES 崩溃）。
+- **首次安装崩溃**：用户配置尚不存在时回写路径触发 `set -u` 未绑定变量。
+
+## [0.1.7] — 2026-09-30
+
+### 变更
+
+- **deb 改用 `dpkg-deb` 直接构建，只装约 100KB 的壳代码**——Electron、Node 与内核
+  首次启动时从国内镜像按需下载（先测速，按网络实况排镜像顺序）。内核经
+  `upstream.lock.json` 钉在 `@deepseek-ai/dsh` 0.2.0-rc.2（sha512 校验）。
+- 移除 Windows/macOS 打包流水线：本项目只发 Linux deb。
+
+## [0.1.3] — 2026-09-29
+
+### 新增
+
+- **加载页 + 内核实时日志**——窗口先于内核出现，流式展示内核日志（已脱敏）、
+  原地推进各阶段，就绪后再停留 `splashMinMs` 供阅读。
+- **安全模式**：不加载第三方 bundle、用户 patch 层挪开备份（不持久化）——插件把
+  内核在加载期搞崩时，壳仍进得去、有路可退。
+- **端口由 OS 分配。** 内核端口每次启动由系统挑选；就绪探测不会再错审占着旧固定
+  端口的别人家内核。
+- **保留应用菜单栏**（应用/文件/编辑/视图/窗口）、F12 / Ctrl+Shift+I 开 DevTools、
+  `kernel.homeSubdir` 支持 `~`、`supervisor.readinessTimeoutMs` 真正从配置读取。
 
 ## [0.1.2] — 2026-08-14
 

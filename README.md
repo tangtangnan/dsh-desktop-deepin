@@ -3,8 +3,8 @@
 面向 Deepin / UOS / Linux x86_64 的 DeepSeek Harness 桌面壳。把命令行 agent
 运行时 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
 
-> **状态**：可用。单测 229/229 通过，已在 Deepin 25 上真机验证（窗口加载、内核就绪、
-> 托盘、菜单）。内核是上游开发预览版，配置面仍在变化。
+> **状态**：可用。单测 253/253 通过、`tsc --noEmit` 零错误，已在 Deepin 25 上真机
+> 验证（窗口加载、内核就绪、托盘、菜单）。内核是上游开发预览版，配置面仍在变化。
 
 ---
 
@@ -286,7 +286,7 @@ Debian/UOS 基础系统里必定存在。这是刻意的：它的职责是「检
 
 ```sh
 npm install              # 壳依赖与类型
-npm test                 # 单元测试 229 个，不联网、不需要 Electron
+npm test                 # 单元测试 253 个，不联网、不需要 Electron
 npm run typecheck        # tsc --noEmit
 npm run doctor           # 运行时自检：Electron / Node / dsh 就绪情况
 npm start                # 启动
@@ -316,6 +316,23 @@ bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 
 产物在 `release/`。**本地打包不会下载内核、Node 或 Electron**——这三样由最终用户
 运行时按需获取（见「下载与安装」），deb 里只有约 1 MB 的壳代码。
+
+**离线双通道**：给无法稳定访问网络的机器打全自带包——
+
+```sh
+# 1. 先把两个官方运行时压缩包放到 release/（npmmirror 或官方源均可）
+curl -L -o release/node-v24.19.0-linux-x64.tar.gz \
+  https://npmmirror.com/mirrors/node/v24.19.0/node-v24.19.0-linux-x64.tar.gz
+curl -L -o release/electron-v33.3.0-linux-x64.zip \
+  https://npmmirror.com/mirrors/electron/v33.3.0/electron-v33.3.0-linux-x64.zip
+
+# 2. 加 --offline 打包，产物名带 -offline 后缀（约 150MB）
+bash tools/build-deb.sh amd64 <版本> --offline
+```
+
+offline 包内嵌官方压缩包与对应的 `SHASUMS256.txt`：`bootstrap.sh` 检测到缺运行时
+时**优先解包内置的**（校验通过后免下载直接就位），内置缺失或校验失败才回退在线
+下载——一份代码，在线/离线两种产物。
 
 ### 模块布局
 

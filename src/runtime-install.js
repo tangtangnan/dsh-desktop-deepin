@@ -258,9 +258,12 @@ export async function installNode({
 /**
  * Installs an Electron runtime under `runtimeDir`.
  *
- * Electron publishes no `SHASUMS256`-style manifest per version, so the
- * integrity guarantee here is the HTTPS origin itself; the install still goes
- * to a private directory and is verified by asking the binary its version.
+ * Electron *does* publish a `SHASUMS256.txt` per release — the same manifest
+ * format Node uses — and both China mirrors carried here sync it alongside the
+ * archives. The digest is fetched from the mirror first, so a substituted
+ * archive cannot pass by also substituting the manifest (that would require
+ * the mirror to fake the upstream manifest itself). The install still goes to
+ * a private directory and is verified by asking the binary its version.
  *
  * @param {object} options
  * @param {string} [options.home]
@@ -288,7 +291,19 @@ export async function installElectron({
   }
 
   await mkdir(dir, { recursive: true })
-  await downloadTo({ kind: 'electron', version, fileName: archiveName, destination: archive, fetchImpl, log })
+  let expected = null
+  try {
+    const shasums = await download(`${mirrorFor('electron')}/${version}/SHASUMS256.txt`, { fetchImpl })
+    expected = digestFromShasums(shasums.toString('utf8'), archiveName)
+    if (expected === null) {
+      log(`SHASUMS256.txt did not list ${archiveName}; falling back to origin-only integrity`)
+    }
+  } catch (error) {
+    // A manifest that cannot be fetched must not block the install — degrade
+    // to the previous behaviour (HTTPS origin is the guarantee), but say so.
+    log(`could not fetch SHASUMS256.txt (${error instanceof Error ? error.message : String(error)}); falling back to origin-only integrity`)
+  }
+  await downloadTo({ kind: 'electron', version, fileName: archiveName, destination: archive, expectedSha256: expected, fetchImpl, log })
   await extractArchive({ archive, into: target, exec })
   await rm(archive, { force: true }).catch(() => undefined)
 

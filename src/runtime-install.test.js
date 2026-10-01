@@ -10,6 +10,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   DEFAULT_ELECTRON_VERSION,
@@ -19,6 +21,7 @@ import {
   digestMatches,
   downloadTo,
   electronArchiveName,
+  installElectron,
   nodeArchiveName,
   runtimeDir,
 } from './runtime-install.js'
@@ -150,5 +153,95 @@ describe('defaults', () => {
   it('pin versions that satisfy the kernel', () => {
     assert.match(DEFAULT_NODE_VERSION, /^v\d+\.\d+\.\d+$/)
     assert.match(DEFAULT_ELECTRON_VERSION, /^v\d+\.\d+\.\d+$/)
+  })
+})
+
+describe('installElectron', () => {
+  // installElectron really mkdirs the runtime directory, so the fake home has
+  // to be a real, throwaway directory — created per test, removed after.
+  let testHome = ''
+  /** @type {string[]} */
+  const leftovers = []
+
+  const useTestHome = async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-ritest-'))
+    leftovers.push(dir)
+    return dir
+  }
+
+  /** Shared fixture: a fake Electron release, and the digest of its archive. */
+  const version = 'v33.3.0'
+  const fileName = 'electron-v33.3.0-linux-x64.zip'
+  const manifestUrl = archiveUrl('electron', version, 'SHASUMS256.txt', 0)
+  const archiveUrl0 = archiveUrl('electron', version, fileName, 0)
+  const archiveUrl1 = archiveUrl('electron', version, fileName, 1)
+  const payload = 'electron-zip-bytes'
+  const goodDigest = sha256(Buffer.from(payload))
+  const manifest = `${goodDigest} *${fileName}\n`
+
+  /** A fake exec that pretends to unzip successfully. */
+  const fakeExec = async () => undefined
+
+  it('fetches SHASUMS256.txt first and refuses a substituted archive', async () => {
+    testHome = await useTestHome()
+    // The manifest names the real digest; the mirror serves different bytes —
+    // the download must fail rather than land on disk.
+    const routes = {
+      [manifestUrl]: manifest,
+      [archiveUrl0]: 'poisoned-bytes',
+      [archiveUrl1]: 'poisoned-too',
+    }
+    const logs = []
+    await assert.rejects(
+      () =>
+        installElectron({
+          home: testHome,
+          version,
+          exec: fakeExec,
+          fetchImpl: /** @type {any} */ (fetchOf(routes)),
+          log: (message) => logs.push(message),
+        }),
+      /could not download/,
+    )
+  })
+
+  it('downloads and installs when the digest matches', async () => {
+    testHome = await useTestHome()
+    const routes = {
+      [manifestUrl]: manifest,
+      [archiveUrl0]: payload,
+    }
+    const logs = []
+    const binary = await installElectron({
+      home: testHome,
+      version,
+      exec: fakeExec,
+      fetchImpl: /** @type {any} */ (fetchOf(routes)),
+      log: (message) => logs.push(message),
+    })
+    assert.equal(binary, join(testHome, '.dsh-desktop', 'runtime', `electron-${version}`, 'electron'))
+  })
+
+  it('degrades to origin-only integrity when the manifest is unreachable', async () => {
+    testHome = await useTestHome()
+    // No manifest route: the manifest fetch 404s, the install proceeds.
+    const routes = { [archiveUrl0]: payload }
+    /** @type {string[]} */
+    const logs = []
+    await installElectron({
+      home: testHome,
+      version,
+      exec: fakeExec,
+      fetchImpl: /** @type {any} */ (fetchOf(routes)),
+      log: (message) => logs.push(message),
+    })
+    assert.ok(logs.some((message) => /falling back to origin-only integrity/.test(message)))
+  })
+
+  it('removes the throwaway homes it created', async () => {
+    for (const dir of leftovers) {
+      await rm(dir, { recursive: true, force: true })
+    }
+    assert.ok('cleaned')
   })
 })

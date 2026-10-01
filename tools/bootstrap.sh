@@ -88,6 +88,83 @@ fetch() {
   fi
 }
 
+# 校验下载产物的 sha256。期望值取自与产物同镜像的 SHASUMS256.txt——镜像若被
+# 投毒，攻击者还得同时篡改上游签名的清单文件，难度完全不同。清单拉不到时
+# 降级为只信 HTTPS 来源并明确告警（与 runtime-install.js 的降级策略一致）。
+#   verify_sha256 <archive> <fileName> <version> <mirror> <kind> [manifestFile]
+# 传入 manifestFile（offline deb 内嵌的清单）时离线校验，不访问网络。
+verify_sha256() {
+  local file="$1" name="$2" ver="$3" mirror="$4" kind="$5"
+  local manifest_file="${6:-}"
+  have sha256sum || { say "  ⚠ 无 sha256sum，跳过校验（仅信 HTTPS 来源）"; return 0; }
+  local expected actual manifest_src
+  if [ -n "$manifest_file" ] && [ -f "$manifest_file" ]; then
+    manifest_src="$manifest_file"
+    expected="$(grep -E "^[0-9a-f]{64}[[:space:]]+\*?$name\$" "$manifest_src" | awk '{print $1}')" || true
+  else
+    manifest_src="$RUNTIME_DIR/SHASUMS256.$kind.$ver.txt"
+    expected="$(fetch "$mirror/$ver/SHASUMS256.txt" "$manifest_src" \
+      && grep -E "^[0-9a-f]{64}[[:space:]]+\*?$name\$" "$manifest_src" \
+      | awk '{print $1}')" || true
+    rm -f "$manifest_src" 2>/dev/null
+  fi
+  if [ -z "$expected" ]; then
+    say "  ⚠ 未获得 $name 的校验值，跳过校验（仅信 HTTPS 来源）"
+    return 0
+  fi
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  if [ "$actual" = "$expected" ]; then
+    ok "sha256 校验通过"
+    return 0
+  fi
+  bad "sha256 校验失败：期望 $expected，实际 $actual"
+  return 1
+}
+
+# 离线缓存解包：offline deb 自带 runtimes/ 目录（官方压缩包 + 内嵌清单）。
+# 命中就直接解包到 RUNTIME_DIR，跳过一切网络；文件不存在则返回 1 走在线下载。
+#   try_offline_unpack <kind: node|electron> <version> <fileName>
+try_offline_unpack() {
+  local kind="$1" ver="$2" file="$3"
+  local bundled="$SHELL_DIR/runtimes"
+  local src="$bundled/$file"
+  local manifest="$bundled/SHASUMS256.$kind.$ver.txt"
+  [ -f "$src" ] || return 1
+  say "发现离线内置运行时：$file（免下载）"
+  # 内嵌清单存在就校验；不存在（打包时拉取失败）则告警放行
+  if [ -f "$manifest" ]; then
+    verify_sha256 "$src" "$file" "$ver" "" "$kind" "$manifest" || {
+      bad "离线内置包校验失败——deb 可能损坏，改走在线下载"
+      return 1
+    }
+  else
+    say "  ⚠ 无内嵌清单，跳过校验"
+  fi
+  mkdir -p "$RUNTIME_DIR"
+  local target
+  if [ "$kind" = "node" ]; then
+    tar -xzf "$src" -C "$RUNTIME_DIR" || { bad "解压失败"; return 1; }
+    local arch arch_label
+    arch="$(uname -m)"; case "$arch" in x86_64) arch_label=x64 ;; aarch64) arch_label=arm64 ;; esac
+    target="$RUNTIME_DIR/node-${ver}-linux-${arch_label}/bin/node"
+    chmod +x "$target" 2>/dev/null
+  else
+    target="$RUNTIME_DIR/electron-${ver}"
+    mkdir -p "$target"
+    unzip -q -o "$src" -d "$target" || { bad "解压失败"; return 1; }
+    target="$target/electron"
+    chmod +x "$target" 2>/dev/null
+  fi
+  ok "离线内置运行时已就位：$target"
+  return 0
+}
+
+# uname -m → Node/Electron 官方压缩包的架构标签
+arch_label() {
+  local a; a="$(uname -m)"
+  case "$a" in x86_64) printf x64 ;; aarch64) printf arm64 ;; *) printf "$a" ;; esac
+}
+
 # 测速：从 url 拉一小段，返回速度（字节/秒）。失败返回 0。
 speed_of() {
   local url="$1" bytes="${2:-262144}" out
@@ -277,6 +354,11 @@ missing() {
 install_node() {
   say "下载 Node ${NODE_WANT}"
   say "国内镜像优先"
+  # offline deb 内嵌了压缩包：直接解包，零网络
+  if try_offline_unpack node "$NODE_WANT" "node-${NODE_WANT}-linux-$(arch_label).tar.gz"; then
+    NODE_BIN="$(locate "$RUNTIME_DIR"/node-${NODE_WANT}-linux-*/bin/node || true)"
+    [ -n "$NODE_BIN" ] && return 0
+  fi
   mkdir -p "$RUNTIME_DIR"
   local arch file url dest mirror
   arch="$(uname -m)"
@@ -301,8 +383,8 @@ install_node() {
   for mirror in "${ordered[@]}"; do
     url="$mirror/$NODE_WANT/$file"
     info "$url"
-    if fetch "$url" "$dest"; then break; fi
-    bad "该镜像失败，换下一个"
+    if fetch "$url" "$dest" && verify_sha256 "$dest" "$file" "$NODE_WANT" "$mirror" node; then break; fi
+    bad "该镜像失败或校验未过，换下一个"
     dest=""
   done
   [ -n "$dest" ] && [ -f "$dest" ] || { bad "所有镜像都下载失败"; return 1; }
@@ -322,6 +404,11 @@ install_node() {
 install_electron() {
   say "下载 Electron ${ELECTRON_WANT}"
   say "国内镜像优先，约 180MB，请耐心等待"
+  # offline deb 内嵌了压缩包：直接解包，零网络
+  if try_offline_unpack electron "$ELECTRON_WANT" "electron-${ELECTRON_WANT}-linux-$(arch_label).zip"; then
+    ELECTRON_BIN="$(locate "$RUNTIME_DIR"/electron-${ELECTRON_WANT}/electron || true)"
+    [ -n "$ELECTRON_BIN" ] && return 0
+  fi
   mkdir -p "$RUNTIME_DIR"
   local arch file url dest mirror
   arch="$(uname -m)"
@@ -344,8 +431,8 @@ install_electron() {
   for mirror in "${ordered[@]}"; do
     url="$mirror/$ELECTRON_WANT/$file"
     info "$url"
-    if fetch "$url" "$dest"; then break; fi
-    bad "该镜像失败，换下一个"
+    if fetch "$url" "$dest" && verify_sha256 "$dest" "$file" "$ELECTRON_WANT" "$mirror" electron; then break; fi
+    bad "该镜像失败或校验未过，换下一个"
     dest=""
   done
   [ -n "$dest" ] && [ -f "$dest" ] || { bad "所有镜像都下载失败"; return 1; }

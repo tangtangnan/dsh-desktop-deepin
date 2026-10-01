@@ -31,13 +31,26 @@ OUTPUT_DIR="$ROOT/release"
 # 壳本身（src/ tools/ config.json）是架构无关的纯 JS + shell，deb 不含运行时，
 # 运行时由 bootstrap.sh 按 uname -m 首次启动下载（官方 Electron/Node 均提供
 # linux-arm64 / linux-x64 预编译包）。所以同一个源码可以打 amd64 与 arm64 两种包。
-# 用法：bash tools/build-deb.sh [amd64|arm64]，默认 amd64。
+# 用法：bash tools/build-deb.sh [amd64|arm64] [版本] [--offline]
+#   --offline：在包内嵌 Node + Electron 的官方压缩包（若 release/ 下已有），
+#   bootstrap.sh 优先解包本地缓存，实现「装完即用、首启零下载」。
+#   产物命名为 *-offline.deb；缺压缩包时明确报错，而不是悄悄打出在线包。
 ARCH="${1:-amd64}"
+OFFLINE=0
+for arg in "$@"; do
+  [ "$arg" = "--offline" ] && OFFLINE=1
+done
 case "$ARCH" in
-  amd64|x86_64) ARCH="amd64"; DEB_ARCH="amd64"; NODE_ARCH_LABEL="x86_64" ;;
-  arm64|aarch64|arm) ARCH="arm64"; DEB_ARCH="arm64"; NODE_ARCH_LABEL="aarch64" ;;
+  amd64|x86_64) ARCH="amd64"; DEB_ARCH="amd64"; NODE_ARCH_LABEL="x64" ;;
+  arm64|aarch64|arm) ARCH="arm64"; DEB_ARCH="arm64"; NODE_ARCH_LABEL="arm64" ;;
   *) err "不支持的架构: $ARCH（仅支持 amd64 / arm64）" ;;
 esac
+
+# offline 模式需要的两个官方压缩包（与 bootstrap.sh 的 NODE_WANT/ELECTRON_WANT 对齐）
+NODE_VER="$(sed -n 's/^NODE_WANT="\(.*\)"/\1/p' "$ROOT/tools/bootstrap.sh")"
+ELECTRON_VER="$(sed -n 's/^ELECTRON_WANT="\(.*\)"/\1/p' "$ROOT/tools/bootstrap.sh")"
+NODE_TARBALL="node-${NODE_VER}-linux-${NODE_ARCH_LABEL}.tar.gz"
+ELECTRON_ZIP="electron-${ELECTRON_VER}-linux-${NODE_ARCH_LABEL}.zip"
 
 err() { echo "✖ $*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -90,6 +103,34 @@ chmod 0644 "$APP_DIR/config.json"
 chmod 0644 "$APP_DIR/package.json"
 chmod 0644 "$APP_DIR/LICENSE" 2>/dev/null || true
 chmod 0644 "$APP_DIR/NOTICE" 2>/dev/null || true
+
+# ── offline 模式：内嵌运行时压缩包 ─────────────────────────────────────
+# bootstrap.sh 会先查 $APP_DIR/runtimes/，命中就直接解包，跳过一切网络。
+if [ "$OFFLINE" -eq 1 ]; then
+  say "offline 模式：内嵌运行时压缩包…"
+  RT_DIR="$APP_DIR/runtimes"
+  mkdir -p "$RT_DIR"
+  NODE_SRC="$OUTPUT_DIR/$NODE_TARBALL"
+  ELECTRON_SRC="$OUTPUT_DIR/$ELECTRON_ZIP"
+  if [ ! -f "$NODE_SRC" ] || [ ! -f "$ELECTRON_SRC" ]; then
+    err "offline 打包需要先备好两个官方压缩包（放到 $OUTPUT_DIR/）：
+  $NODE_TARBALL
+  $ELECTRON_ZIP
+下载命令：
+  curl -L -o $OUTPUT_DIR/$NODE_TARBALL https://npmmirror.com/mirrors/node/$NODE_VER/$NODE_TARBALL
+  curl -L -o $OUTPUT_DIR/$ELECTRON_ZIP https://npmmirror.com/mirrors/electron/$ELECTRON_VER/$ELECTRON_ZIP"
+  fi
+  cp "$NODE_SRC" "$RT_DIR/"
+  cp "$ELECTRON_SRC" "$RT_DIR/"
+  # 同一镜像的 SHASUMS256.txt 一并内嵌，离线机器也能校验
+  curl -fsSL "https://npmmirror.com/mirrors/node/$NODE_VER/SHASUMS256.txt" \
+    -o "$RT_DIR/SHASUMS256.node.$NODE_VER.txt" 2>/dev/null \
+    || say "  ⚠ node 的 SHASUMS256.txt 拉取失败，离线校验将跳过"
+  curl -fsSL "https://npmmirror.com/mirrors/electron/$ELECTRON_VER/SHASUMS256.txt" \
+    -o "$RT_DIR/SHASUMS256.electron.$ELECTRON_VER.txt" 2>/dev/null \
+    || say "  ⚠ electron 的 SHASUMS256.txt 拉取失败，离线校验将跳过"
+  chmod 0644 "$RT_DIR"/* 2>/dev/null
+fi
 
 # ── DEBIAN 控制文件 ─────────────────────────────────────────────────────
 say "写 DEBIAN/control…"
@@ -156,7 +197,9 @@ EOF
 
 # ── 打包 ───────────────────────────────────────────────────────────────
 mkdir -p "$OUTPUT_DIR"
-DEB_FILE="$OUTPUT_DIR/DeepSeek-Harness-Desktop-${VERSION}-${ARCH}.deb"
+SUFFIX=""
+[ "$OFFLINE" -eq 1 ] && SUFFIX="-offline"
+DEB_FILE="$OUTPUT_DIR/DeepSeek-Harness-Desktop-${VERSION}${SUFFIX}-${ARCH}.deb"
 say "打包 $DEB_FILE …"
 dpkg-deb --build --root-owner-group "$STAGE" "$DEB_FILE" || err "dpkg-deb 打包失败"
 
