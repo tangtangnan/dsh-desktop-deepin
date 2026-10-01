@@ -21,6 +21,8 @@ build/
 release/
 release-unpacked/
 linux-unpacked/
+# deb 打包中间产物（build-deb.sh 每次重新生成，不入库）
+debian/
 *.tsbuildinfo
 
 # --- electron-builder / Electron cache ---
