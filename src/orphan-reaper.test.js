@@ -290,7 +290,7 @@ describe('reapOrphans', () => {
       readCmdline: async () => cmdlineBuf(['init']),
       readUptime: async () => 1000,
     }
-    const result = await reapOrphans({ marker: USER_DATA, io })
+    const result = await reapOrphans({ marker: USER_DATA, io, platform: 'linux' })
     assert.equal(result.skipped, 'no-marked-processes')
   })
 

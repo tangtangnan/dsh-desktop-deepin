@@ -169,9 +169,9 @@ describe('installElectron', () => {
     return dir
   }
 
-  /** Shared fixture: a fake Electron release, and the digest of its archive. */
+  /** Shared fixture: a fake Electron release for the *real* platform. */
   const version = 'v33.3.0'
-  const fileName = 'electron-v33.3.0-linux-x64.zip'
+  const fileName = electronArchiveName(version)
   const manifestUrl = archiveUrl('electron', version, 'SHASUMS256.txt', 0)
   const archiveUrl0 = archiveUrl('electron', version, fileName, 0)
   const archiveUrl1 = archiveUrl('electron', version, fileName, 1)
@@ -219,7 +219,8 @@ describe('installElectron', () => {
       fetchImpl: /** @type {any} */ (fetchOf(routes)),
       log: (message) => logs.push(message),
     })
-    assert.equal(binary, join(testHome, '.dsh-desktop', 'runtime', `electron-${version}`, 'electron'))
+    const binaryName = process.platform === 'win32' ? 'electron.exe' : 'electron'
+    assert.equal(binary, join(testHome, '.dsh-desktop', 'runtime', `electron-${version}`, binaryName))
   })
 
   it('degrades to origin-only integrity when the manifest is unreachable', async () => {
