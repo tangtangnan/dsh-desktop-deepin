@@ -172,20 +172,56 @@ detect() {
   cfg_dsh="$(config_value systemDsh || true)"
   cfg_nodebin="$(config_value nodeBinDir || true)"
 
+  # 候选位置按「系统级 → 版本管理器 → 用户级 → 第三方包管理器 → 自举私有目录」铺开，
+  # 目的是尽量复用机器上已有的运行时，避免无谓下载。glob 未匹配时保持原样、[ -x ] 会跳过。
   NODE_BIN="$(locate "${cfg_nodebin:+$cfg_nodebin/node}" node \
     /usr/local/bin/node /usr/bin/node /usr/local/nodejs/bin/node \
-    "$RUNTIME_DIR"/node-*/bin/node "${HOME}/.local/bin/node" || true)"
+    /usr/local/node/bin/node /opt/node*/bin/node /snap/bin/node \
+    /home/linuxbrew/.linuxbrew/bin/node \
+    "${HOME}/.nvm/versions/node/"*/bin/node \
+    "${HOME}/.fnm/node-versions/"*/installation/bin/node \
+    "${HOME}/.volta/bin/node" \
+    "${HOME}/.asdf/installs/nodejs/"*/bin/node "${HOME}/.asdf/shims/node" \
+    "${HOME}/.nvs/"*/bin/node \
+    /usr/local/n/versions/node/"${NODE_WANT}"/bin/node \
+    /usr/local/n/versions/node/*/bin/node \
+    "${HOME}/.local/share/pnpm/node" "${HOME}/.yarn/bin/node" \
+    "${HOME}/.local/bin/node" \
+    "$RUNTIME_DIR"/node-*/bin/node || true)"
   ELECTRON_BIN="$(locate "$cfg_electron" electron \
-    /usr/bin/electron /usr/local/bin/electron /opt/electron/electron \
+    /usr/bin/electron /usr/local/bin/electron /usr/lib/electron/electron \
+    /opt/electron/electron /opt/electron*/electron /snap/bin/electron \
+    /usr/share/electron/electron \
+    "${HOME}/.local/bin/electron" "${HOME}/.local/share/electron/"*/electron \
+    "${HOME}/.cache/electron/"*/electron \
+    "${HOME}/.nvm/versions/node/"*/lib/node_modules/electron/dist/electron \
+    "${HOME}/.dsh-desktop/runtime/"electron-*/electron \
     "$RUNTIME_DIR"/electron-*/electron || true)"
+  # dsh 优先在「Node 所在的 bin 目录」里找：npm install -g 一定装到那个目录，
+  # 这是最常见的情况（真机实测 dsh 就在 ~/.nvm/versions/node/*/bin/dsh）。
+  local node_dir=""
+  [ -n "$NODE_BIN" ] && node_dir="$(dirname "$NODE_BIN")"
   DSH_BIN="$(locate "$cfg_dsh" dsh \
-    /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh || true)"
+    ${node_dir:+"$node_dir/dsh"} \
+    /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
+    /snap/bin/dsh \
+    "${HOME}/.local/bin/dsh" "${HOME}/.yarn/bin/dsh" \
+    "${HOME}/.local/share/pnpm/dsh" \
+    "${HOME}/.nvm/versions/node/"*/bin/dsh \
+    "${HOME}/.volta/bin/dsh" \
+    "${HOME}/.asdf/shims/dsh" || true)"
 
-  # 已装 dsh 但不在 PATH？再用 node 探一次常见全局目录。
+  # 已装 dsh 但不在 PATH？再用常见全局 node_modules 目录探一次（覆盖 pnpm/yarn/版本管理器等）。
   if [ -z "$DSH_BIN" ] && [ -n "$NODE_BIN" ]; then
-    local candidate
-    for candidate in /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
-                     /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js; do
+    local candidate node_dir2
+    node_dir2="$(dirname "$NODE_BIN")"
+    for candidate in \
+      "${node_dir2%/bin}"/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      "${HOME}/.nvm/versions/node/"*/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      "${HOME}/.local/share/pnpm/global/"*/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      "${HOME}/.config/yarn/global/node_modules/@deepseek-ai/dsh/lib/bin.js"; do
       [ -f "$candidate" ] && { DSH_BIN="$candidate"; break; }
     done
   fi
