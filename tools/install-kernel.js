@@ -95,6 +95,11 @@ function main() {
 
   rebuildNativeModules()
 
+  // Placed *after* every tree-reshaping step (plugin installs, pty swap):
+  // each `npm install` recomputes hoisting and may drop peers that earlier
+  // steps installed — the sweep must see the final tree.
+  installMissingPeers(kernelDir)
+
   verify(kernel)
   verifyShippedPlugins(shippedPlugins ?? {})
   console.log(`kernel ${kernel.version} installed and verified`)
@@ -150,15 +155,23 @@ function rebuildNativeModules() {
     if (!existsSync(pkgDir)) continue
 
     console.log(`rebuilding native module ${name}`)
-    execFileSync(
-      process.platform === 'win32' ? 'npm.cmd' : 'npm',
-      ['rebuild', name],
-      {
-        cwd: kernelDir,
-        stdio: 'inherit',
-        shell: process.platform === 'win32',
-      },
-    )
+    try {
+      execFileSync(
+        process.platform === 'win32' ? 'npm.cmd' : 'npm',
+        ['rebuild', name],
+        {
+          cwd: kernelDir,
+          stdio: 'inherit',
+          shell: process.platform === 'win32',
+        },
+      )
+    } catch (error) {
+      // A failed source build must not kill the whole install: the published
+      // tarball already carries prebuilds for the common case, and a hard
+      // failure here left the tree half-configured on hosts without a
+      // toolchain. Warn and continue.
+      console.error(`rebuild of ${name} failed (continuing): ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 
