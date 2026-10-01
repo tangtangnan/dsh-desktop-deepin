@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import {
   MIN_ELECTRON_MAJOR,
   MIN_NODE_VERSION,
@@ -71,7 +71,9 @@ describe('meetsMinimum', () => {
 
 describe('pathDirs', () => {
   it('splits on the platform delimiter and drops empty entries', () => {
-    assert.deepEqual(pathDirs('/a:/b'), ['/a', '/b'])
+    // 按「平台分隔符」构造输入：win32 上是 ';'，POSIX 上是 ':'。
+    const sep = delimiter
+    assert.deepEqual(pathDirs(`/a${sep}/b`), ['/a', '/b'])
     assert.deepEqual(pathDirs(''), [])
   })
 })

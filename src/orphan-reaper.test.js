@@ -325,7 +325,7 @@ describe('reapOrphans', () => {
     }
     process.kill = fakeKill
     try {
-      const result = await reapOrphans({ marker: USER_DATA, io, graceMs: 100 })
+      const result = await reapOrphans({ marker: USER_DATA, io, graceMs: 100, platform: 'linux' })
       assert.deepEqual(result.doomed.sort((a, b) => a - b), [500, 501])
       assert.deepEqual(result.killed, [])
       assert.deepEqual(result.survived, [])
@@ -364,7 +364,7 @@ describe('reapOrphans', () => {
     }
     process.kill = fakeKill
     try {
-      const result = await reapOrphans({ marker: USER_DATA, io, graceMs: 100 })
+      const result = await reapOrphans({ marker: USER_DATA, io, graceMs: 100, platform: 'linux' })
       assert.deepEqual(result.doomed, [600])
       assert.deepEqual(result.killed, [600])
       assert.deepEqual(result.survived, [])
@@ -386,7 +386,7 @@ describe('reapOrphans', () => {
         throw new Error('EIO')
       },
     }
-    const result = await reapOrphans({ marker: USER_DATA, io })
+    const result = await reapOrphans({ marker: USER_DATA, io, platform: 'linux' })
     assert.equal(result.skipped, 'error')
   })
 })
