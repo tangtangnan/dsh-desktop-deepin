@@ -212,6 +212,20 @@ export PATH="$NEW_NODE_DIR:$PATH"
 export DSH_KERNEL_BIN="$SYSTEM_DSH"
 export ELECTRON_USER_DATA="$USERDATA"
 export DSH_TELEMETRY_MODE="$TELEMETRY"
+
+# ── 时区兜底 ────────────────────────────────────────────────────────────
+# Chromium/ICU 只认 IANA 正式时区名。部分国产发行版把 /etc/timezone 写成
+# backward 别名（Asia/Beijing、PRC 等），ICU 解析会得到 undefined，前端随后报
+# "clientTimeZone must be UTC or a valid IANA Area/Location name"。
+# 只在检测到这类已知非法别名时映射成等价正式名，其余情况一律不干预，
+# 避免在时区本来就正常的机器上改坏。
+tz_now="${TZ:-$(cat /etc/timezone 2>/dev/null || echo '')}"
+case "$tz_now" in
+  Asia/Beijing|PRC|Asia/Chungking)
+    export TZ="Asia/Shanghai"
+    info "时区兜底：$tz_now 非 IANA 正式名（Chromium 不认），已映射为 $TZ"
+    ;;
+esac
 mkdir -p "$USERDATA"
 
 # DSH_HOME 解析：~ 必须展开（Node 的 path.isAbsolute('~/.dsh') 为 false，
