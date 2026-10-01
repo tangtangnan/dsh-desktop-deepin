@@ -44,6 +44,7 @@ function main() {
   // full path runs at the end.
   if (isAlreadyInstalled(kernel) && areShippedPluginsInstalled(shippedPlugins ?? {})) {
     console.log(`kernel ${kernel.version} already installed; skipping npm install`)
+    installMissingPeers(kernelDir)
     verify(kernel)
     verifyShippedPlugins(shippedPlugins ?? {})
     console.log(`kernel ${kernel.version} installed and verified`)
@@ -73,12 +74,6 @@ function main() {
       '--no-fund',
       '--omit=dev',
       '--install-strategy=hoisted',
-      // The pinned rc kernel's tree carries rc-range peer specs that npm's
-      // resolver can pit against each other (observed: dsh-settings
-      // 0.1.1-rc.2 from an elder transitive vs the 0.2.0-rc.2 required here,
-      // ERESOLVE failing the whole install). The kernel ships with the tree
-      // it was tested against, so a peer conflict must not fail the payload.
-      '--legacy-peer-deps',
     ],
     { cwd: kernelDir, stdio: 'inherit', shell: process.platform === 'win32' },
   )
@@ -88,6 +83,12 @@ function main() {
   // plugin installed here is reachable from any user profile without each user having
   // to fetch it themselves. Each plugin is installed independently with `--no-save` so
   // the payload manifest never carries them — they live in package-lock.json only.
+  // npm7+ auto-installs peers, but rc-range peer specs can collide and be
+  // skipped (observed: `@deepseek-ai/cordis-plugin-group`, a peer of
+  // dsh-app-boot, absent from the tree → ERR_MODULE_NOT_FOUND at boot).
+  // Read the installed tree's actual peer requirements and fill the gaps.
+  installMissingPeers(kernelDir)
+
   installShippedPlugins(shippedPlugins ?? {})
 
   patchShippedPlugins()
@@ -239,6 +240,59 @@ function verify(kernel) {
  */
 function isCommentKey(key) {
   return key.startsWith('$')
+}
+
+/**
+ * Reads every installed package's `peerDependencies` and explicitly installs
+ * any peer missing from `node_modules`. Uses `--legacy-peer-deps` so a
+ * peer's own rc-range peers cannot re-trigger ERESOLVE.
+ *
+ * @param {string} kernelDir - the payload root (…/resources/kernel)
+ * @returns {void}
+ */
+function installMissingPeers(kernelDir) {
+  const modulesDir = join(kernelDir, 'node_modules')
+  /** @type {any} */
+  let lock = {}
+  try {
+    lock = JSON.parse(readFileSync(join(kernelDir, 'package-lock.json'), 'utf8'))
+  } catch {
+    return
+  }
+  const wanted = new Set()
+  for (const [pkgPath, meta] of Object.entries(lock.packages ?? {})) {
+    if (typeof meta !== 'object' || meta === null) continue
+    // Only peers of packages at the tree root matter for hoisted resolution;
+    // nested copies resolve against their own subtree. Scoped packages span
+    // two segments (node_modules/@scope/name).
+    if (!/^node_modules\/(@[^/]+\/)?[^/]+$/.test(pkgPath)) continue
+    const metaPeerMeta = /** @type {Record<string, {optional?: boolean}>} */ (meta.peerDependenciesMeta ?? {})
+    const peers = /** @type {Record<string, string>} */ (meta.peerDependencies ?? {})
+    for (const [name, range] of Object.entries(peers)) {
+      if (metaPeerMeta[name]?.optional) continue
+      wanted.add(`${name}@${range}`)
+    }
+  }
+  const missing = [...wanted].filter((spec) => {
+    const at = spec.lastIndexOf('@')
+    const name = spec.slice(0, at)
+    return !existsSync(join(modulesDir, ...name.split('/')))
+  })
+  if (missing.length === 0) return
+  console.log(`installing missing peer packages: ${missing.join(', ')}`)
+  execFileSync(
+    process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    [
+      'install',
+      '--no-save',
+      '--ignore-scripts',
+      '--no-audit',
+      '--no-fund',
+      '--legacy-peer-deps',
+      ...missing,
+    ],
+    { cwd: kernelDir, stdio: 'inherit', shell: process.platform === 'win32' },
+  )
 }
 
 /**

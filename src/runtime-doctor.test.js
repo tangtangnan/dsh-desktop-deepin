@@ -231,6 +231,7 @@ describe('detectRuntime', () => {
 describe('formatReport', () => {
   it('marks each dependency present or missing', () => {
     const report = detectRuntime({
+      platform: 'linux',
       exists: existsOnly([join('/usr/bin', 'node')]),
       runVersion: versionsOf({ [join('/usr/bin', 'node')]: 'v24.19.0' }),
       pathValue: '/usr/bin',
