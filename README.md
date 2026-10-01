@@ -97,6 +97,18 @@ sudo apt install ./DeepSeek-Harness-Desktop-<版本>-amd64.deb
 
 > 该结论来自 anywhere-labs PR #1120 的 Ubuntu 24.04 真机验证，非推测。
 
+### 装完就会在后台预下载，不用干等
+
+`apt install` 结束后，安装脚本会以**你自己的账号**（不是 root）在后台自动开始
+下载运行时 —— 所以绝大多数情况下，等你双击启动器时它已经就绪，跟「装完即用」
+没区别，而包还是只有 106 KB。
+
+- 下载在后台跑，`apt install` 立即返回，不会卡住安装进度
+- 日志：`~/.dsh-desktop/bootstrap-postinst.log`
+- 不想装时就下载（比如批量部署、离线机）：
+  `sudo DSH_NO_POSTINST_DOWNLOAD=1 apt install ./xxx.deb`
+- 若你双击时它还没下完，启动器会显示等待进度并排队，不会重复下载
+
 Deepin/UOS 上首次双击启动器可能询问「是否信任该应用」，确认即可。信任按用户记录，
 所以「点了没反应」通常是这个询问，不是启动失败。
 

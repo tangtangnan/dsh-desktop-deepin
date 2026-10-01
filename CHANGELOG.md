@@ -37,6 +37,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The installer pre-downloads the runtimes in the background, under your own
+  account.** `postinst` runs as root, but the runtimes belong in the installing
+  user's `~/.dsh-desktop/runtime`, so it now resolves the real login user
+  (`$SUDO_USER` → `loginctl` → the first real `/home` entry) and drops
+  privileges with `runuser`/`su` before starting the download. The download is
+  detached (`setsid` + `nohup`) so `apt install` returns immediately instead of
+  appearing to hang for minutes on the 180 MB Electron — by the time the user
+  clicks the launcher it is usually already there, which is the
+  "works right after install" feel without shipping a 152 MB offline deb. Opt
+  out with `DSH_NO_POSTINST_DOWNLOAD=1`. `bootstrap.sh install` now takes an
+  atomic `mkdir` lock so a concurrent launch cannot race it on the same
+  `.partial` file, and `start-shell.sh` waits on that lock (with visible
+  progress) instead of downloading twice.
+
+
 - **Downloads are checksum-verified on both install paths.** The shell-side
   installer (`src/runtime-install.js`) verified Node but trusted the HTTPS
   origin for Electron, the largest and therefore most attractive component;

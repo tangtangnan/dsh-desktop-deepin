@@ -173,6 +173,51 @@ if [ -x "$BOOTSTRAP" ]; then
     echo ""
   }
 fi
+
+# ── 以「真实登录用户」身份在后台预下载运行时 ──────────────────────────
+# postinst 由 root 执行（apt install），而运行时要落在该用户的
+# $HOME/.dsh-desktop/runtime 里——以 root 下载会写错属主、也污染 root 的家
+# 目录。所以先认人，再降权跑。
+#
+# 为什么是「后台」：Electron 约 180MB，阻塞 postinst 会让 apt 卡几分钟，
+# 用户以为安装死了。这里 detach 一个后台任务，postinst 立即返回，下载在
+# 后台继续；用户稍后双击启动时多半已经就绪，等于拿到「装完即用」的体验，
+# 又不必发 152MB 的离线包。
+#
+# 关闭方式（装包时不预下载）：
+#   sudo DSH_NO_POSTINST_DOWNLOAD=1 apt install ./xxx.deb
+if [ "${DSH_NO_POSTINST_DOWNLOAD:-}" = "1" ]; then
+  echo "（已设置 DSH_NO_POSTINST_DOWNLOAD=1，跳过安装后预下载）"
+else
+  # 认人：$SUDO_USER（sudo 场景）→ loginctl 活跃用户 → /home 下第一个真实用户
+  INSTALL_USER="${SUDO_USER:-}"
+  if [ -z "$INSTALL_USER" ] || [ "$INSTALL_USER" = "root" ]; then
+    INSTALL_USER="$(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}' | grep -v '^root$' | head -1)"
+  fi
+  if [ -z "$INSTALL_USER" ]; then
+    for candidate in /home/*; do
+      [ -d "$candidate" ] || continue
+      name="$(basename "$candidate")"
+      if id "$name" >/dev/null 2>&1; then INSTALL_USER="$name"; break; fi
+    done
+  fi
+
+  if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ] && id "$INSTALL_USER" >/dev/null 2>&1 && [ -x "$BOOTSTRAP" ]; then
+    echo "正在为 $INSTALL_USER 后台预下载运行时（约 180MB，不阻塞安装）…"
+    # setsid + nohup：脱离 apt 的进程组，apt 结束时下载不受影响。
+    # 日志落在该用户自己的 .dsh-desktop 下（不用 /tmp，也避免 root 写用户目录）。
+    if command -v runuser >/dev/null 2>&1; then
+      runuser -u "$INSTALL_USER" -- setsid nohup bash "$BOOTSTRAP" install \
+        >>"/home/$INSTALL_USER/.dsh-desktop/bootstrap-postinst.log" 2>&1 &
+    else
+      su - "$INSTALL_USER" -c "setsid nohup bash '$BOOTSTRAP' install \
+        >>'/home/$INSTALL_USER/.dsh-desktop/bootstrap-postinst.log' 2>&1 &"
+    fi
+    echo "下载在后台进行；完成后双击启动器即可直接使用。"
+  else
+    echo "（未能识别登录用户，跳过预下载；首次启动时会自动补齐）"
+  fi
+fi
 exit 0
 EOF
 chmod 0755 "$STAGE/DEBIAN/postinst"

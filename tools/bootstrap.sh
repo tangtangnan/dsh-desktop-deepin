@@ -528,6 +528,20 @@ case "$cmd" in
       say "全部就绪，无需下载。"
       exit 0
     fi
+
+    # 互斥：deb 的 postinst 会在装完后以登录用户身份后台跑一次本脚本，用户
+    # 也可能同时双击启动器。两者若并发下载，会争抢同一个 runtime 目录里的
+    # .partial 文件（先写完的一方 rename 后，另一方还在追加 → 产物损坏）。
+    # mkdir 是原子的，拿不到锁就说明已有实例在装——直接退出即可，对方装完
+    # 就是我们要的结果。
+    lock="$RUNTIME_DIR/.bootstrap-install.lock"
+    mkdir -p "$RUNTIME_DIR" 2>/dev/null
+    if ! mkdir "$lock" 2>/dev/null; then
+      say "已有安装进程在下载运行时（锁：$lock），本次跳过。"
+      exit 0
+    fi
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT INT TERM
+
     require_basics || exit 1
     say "缺失：$m —— 开始下载"
     say ""

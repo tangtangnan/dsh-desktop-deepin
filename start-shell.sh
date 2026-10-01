@@ -181,7 +181,24 @@ if [ -n "$MISSING" ]; then
   [ -x "$BOOTSTRAP" ] || err "自举脚本缺失或不可执行: $BOOTSTRAP
 请手动执行：bash $SHELL_DIR/tools/bootstrap.sh install"
 
-  # 交给纯 shell 的 bootstrap 干活（它不依赖 node，所以 node 缺失时也能跑）
+  # deb 的 postinst 装完后会以登录用户身份在后台预下载运行时。如果那一位还
+  # 在下（.bootstrap-install.lock 存在），这里排队等它，而不是抢着下载——
+  # 并发会争抢同一个 runtime 目录下的 .partial 文件（先 rename 的一方把
+  # 另一方还在追加的文件顶掉 → 产物损坏）。等待期间给可见进度。
+  LOCK="$RUNTIME_DIR/.bootstrap-install.lock"
+  if [ -d "$LOCK" ]; then
+    say "检测到安装后的预下载仍在后台进行，等待它完成…"
+    waited=0
+    while [ -d "$LOCK" ] && [ "$waited" -lt 900 ]; do
+      sleep 5
+      waited=$((waited + 5))
+      [ $((waited % 60)) -eq 0 ] && say "  已等待 ${waited}s…"
+    done
+    [ -d "$LOCK" ] || say "  预下载完成。"
+  fi
+
+  # 交给纯 shell 的 bootstrap 干活（它不依赖 node，所以 node 缺失时也能跑）。
+  # 若上面的后台实例已经装完，bootstrap 会因「全部就绪」直接返回成功。
   bash "$BOOTSTRAP" install || err "运行时下载失败，请检查网络后重试：
   bash $BOOTSTRAP install"
 
