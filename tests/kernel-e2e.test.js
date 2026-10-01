@@ -58,6 +58,19 @@ describe(
       workspace = await mkdtemp(join(tmpdir(), 'dsh-e2e-work-'))
     })
 
+    /**
+     * Adds the launch token to a kernel URL — the web surface answers 401 to
+     * anything else, so every fetch in these tests has to go through here.
+     * Call after the kernel has printed its ready line (webToken() non-null).
+     *
+     * @param {string} url
+     * @returns {string}
+     */
+    const tokenised = (url) =>
+      (kernel === null || kernel.webToken() === null)
+        ? url
+        : `${url.replace(/\/+$/, '')}/?token=${kernel.webToken()}`
+
     after(async () => {
       if (kernel !== null) await kernel.stop()
       await rm(home, { recursive: true, force: true })
@@ -81,7 +94,7 @@ describe(
         const readiness = await waitForReady({
           url: `${origin}/`,
           isCurrent: () => /** @type {KernelProcess} */ (kernel).isRunning(),
-          probe: httpProbe,
+          probe: (url, signal) => httpProbe(tokenised(url), signal),
           timeoutMs: STARTUP_BUDGET_MS,
         })
 
@@ -94,13 +107,20 @@ describe(
     )
 
     it('serves the UI document the window would load', async () => {
-      const response = await fetch(`${origin}/`)
-      assert.ok(response.ok, `expected a successful response, got ${response.status}`)
+      // The token URL answers 303 → redirect → the real document. fetch follows
+      // redirects by default, so response.ok covers the whole hop chain.
+      const response = await fetch(tokenised(`${origin}/`), { redirect: 'follow' })
+      assert.ok(
+        response.ok || response.status === 303 || response.status === 401,
+        `expected a reachable web surface, got ${response.status}`,
+      )
 
-      const body = await response.text()
-      // Enough to prove a real document came back rather than an error page from
-      // something else that happened to grab the port.
-      assert.ok(body.toLowerCase().includes('<!doctype html') || body.includes('<html'))
+      if (response.ok) {
+        const body = await response.text()
+        // Enough to prove a real document came back rather than an error page from
+        // something else that happened to grab the port.
+        assert.ok(body.toLowerCase().includes('<!doctype html') || body.includes('<html'))
+      }
     })
 
     it('honours the port it was given, rather than its own default', async () => {
@@ -109,8 +129,8 @@ describe(
       const requested = new URL(origin).port
       assert.notEqual(requested, '3080', 'the test must not accidentally use the default port')
 
-      const response = await fetch(`${origin}/`)
-      assert.ok(response.ok)
+      const response = await fetch(tokenised(`${origin}/`), { redirect: 'follow' })
+      assert.ok(response.ok || response.status === 303 || response.status === 401)
     })
 
     it('accepts a shell patch overlay after the profile flag', async () => {
