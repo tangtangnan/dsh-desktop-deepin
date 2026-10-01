@@ -1,13 +1,9 @@
 # DeepSeek Harness Desktop · Deepin / UOS / Linux 版
 
-[English](README.en.md) | 中文
-
 面向 Deepin / UOS / Linux x86_64 的 DeepSeek Harness 桌面壳。把命令行 agent
 运行时 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
 
-![Running on Deepin 25](docs/images/05-deepin-running.png)
-
-> **状态**：可用。单测 184/184 通过，已在 Deepin 25 上真机验证（窗口加载、内核就绪、
+> **状态**：可用。单测 229/229 通过，已在 Deepin 25 上真机验证（窗口加载、内核就绪、
 > 托盘、菜单、桌面工具浮层）。内核是上游开发预览版，配置面仍在变化。
 
 ---
@@ -30,12 +26,12 @@
 
 ## 下载与安装
 
-发布包在 [GitHub Releases](https://github.com/westanke/dsh-desktop-deepin/releases)。
+发布包在 [GitHub Releases](https://github.com/westanke/dsh-desktop-deepin/releases)
+与 [Gitee Releases](https://gitee.com/westanke/dsh-desktop-deepin/releases)（国内网络推荐 Gitee）。
 
 | 格式 | 覆盖系统 | 说明 |
 |---|---|---|
-| `*.deb` | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 装到 `/opt`，注册启动器与图标 |
-| `*.AppImage` | 任意 Linux x86_64 | 免安装，赋可执行权限直接跑 |
+| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 装到 `/opt`，注册启动器与图标 |
 
 ### 安装包只有约 1 MB——因为运行时按需获取
 
@@ -306,8 +302,8 @@ Debian/UOS 基础系统里必定存在。这是刻意的：它的职责是「检
 ## 开发
 
 ```sh
-npm install              # 壳依赖（electron-builder、类型）
-npm test                 # 单元测试 224 个，不联网、不需要 Electron
+npm install              # 壳依赖与类型
+npm test                 # 单元测试 229 个，不联网、不需要 Electron
 npm run typecheck        # tsc --noEmit
 npm run doctor           # 运行时自检：Electron / Node / dsh 就绪情况
 npm start                # 启动
@@ -315,13 +311,13 @@ npm start                # 启动
 
 ### 打包
 
-打包**不是自动的**——GitHub Actions 只是 CI 执行器，得由 workflow 驱动。本仓库有三个：
+打包由 GitHub Actions 自动完成：打 `v*` tag 即产出 amd64 / arm64 两个 deb
+并挂到 GitHub Release，同时同步到 Gitee Release。本仓库有两个 workflow：
 
 | workflow | 触发 | 作用 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push main / PR | 三平台跑测试 + scan-leaks |
-| `.github/workflows/release.yml` | 打 `v*` tag | 三平台打包发布 |
-| `.github/workflows/package-linux.yml` | 打 `v*` tag / 手动 | **deb + AppImage 打包并挂到 release** |
+| `.github/workflows/package-linux.yml` | 打 `v*` tag / 手动 | **deb（amd64 + arm64）打包挂 release，并同步 Gitee** |
 
 手动触发打包（或在 Actions 页面点 Run workflow）：
 
@@ -329,16 +325,14 @@ npm start                # 启动
 gh workflow run package-linux.yml --repo westanke/dsh-desktop-deepin
 ```
 
-本地打包：
+本地打包（用 dpkg-deb 手工打，不走 electron-builder）：
 
 ```sh
-npm ci && npm test
-npx electron-builder --linux deb --linux AppImage --publish never
+bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 ```
 
-产物在 `release/`。**本地打包不会下载内核或 Node**——这两样由最终用户运行时按需获取
-（见「下载与安装」）。Electron 由 electron-builder 打进 deb，它复用 `~/.cache/electron`
-里已有的缓存，只在缓存缺失时才下载。
+产物在 `release/`。**本地打包不会下载内核、Node 或 Electron**——这三样由最终用户
+运行时按需获取（见「下载与安装」），deb 里只有约 1 MB 的壳代码。
 
 ### 模块布局
 
