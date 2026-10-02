@@ -61,11 +61,20 @@ for pkg in "${PLUGINS[@]}"; do
     continue
   fi
   info "安装 $pkg …"
-  if "$DSH_BIN" plugin --profile web add "$pkg" --registry "$NPM_REGISTRY" >/dev/null 2>&1 \
-     || "$DSH_BIN" plugin --profile web add "$pkg" >/dev/null 2>&1; then
+  # registry 双保险：--registry flag + npm_config_registry 环境变量（pnpm 两者都认，
+  # 某些版本/环境下 flag 可能被上游忽略）。失败时必须把输出打出来——吞掉报错
+  # 曾导致真机四个插件全失败却查不到原因（v0.2.7 事故）。
+  err_file="$(mktemp -u "$HOME/.dsh-desktop/plugin-add.XXXXXX")"
+  mkdir -p "$HOME/.dsh-desktop" 2>/dev/null
+  if npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" plugin --profile web add "$pkg" \
+       --registry "$NPM_REGISTRY" 2>"$err_file" \
+     || npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" plugin --profile web add "$pkg" 2>>"$err_file"; then
     ok "$pkg 安装成功"
+    rm -f "$err_file"
   else
-    bad "$pkg 安装失败（不阻塞其余插件与启动）"
+    bad "$pkg 安装失败，dsh/pnpm 输出如下："
+    sed 's/^/    | /' "$err_file" 2>/dev/null | tail -15
+    rm -f "$err_file"
     fail=$((fail + 1))
   fi
 done
