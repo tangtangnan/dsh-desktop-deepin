@@ -246,7 +246,11 @@ SUFFIX=""
 [ "$OFFLINE" -eq 1 ] && SUFFIX="-offline"
 DEB_FILE="$OUTPUT_DIR/DeepSeek-Harness-Desktop-${VERSION}${SUFFIX}-${ARCH}.deb"
 say "打包 $DEB_FILE …"
-dpkg-deb --build --root-owner-group "$STAGE" "$DEB_FILE" || err "dpkg-deb 打包失败"
+# -Zgzip：显式指定压缩格式。新版 dpkg-deb（Ubuntu 24.04 runner，1.22+）默认改用
+# zstd，而 Deepin 20 / 老系（dpkg 1.19）不认识 control.tar.zst，装包直接报
+# 「对成员 control.tar.zst 使用了未知的压缩」。gzip 是所有 dpkg 版本的最小公约数，
+# 壳才 ~100KB，压缩率差异可忽略。
+dpkg-deb --build -Zgzip --root-owner-group "$STAGE" "$DEB_FILE" || err "dpkg-deb 打包失败"
 
 # ── 报告 ───────────────────────────────────────────────────────────────
 SIZE=$(du -h "$DEB_FILE" | cut -f1)
