@@ -241,6 +241,8 @@ if [ -x "$PLUGINS_SCRIPT" ]; then
   fi
   if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ] && id "$INSTALL_USER" >/dev/null 2>&1; then
     echo "检查默认插件（dsh-im / pocket-relay / mcp-panel / market）…"
+    # --profile 是 dsh 全局选项，必须在 plugin 之前（实测：放 plugin add
+    # 之后会报 "required option '--profile <name>' not specified"）。
     runuser -u "$INSTALL_USER" -- bash "$PLUGINS_SCRIPT" \
       >>"/home/$INSTALL_USER/.dsh-desktop/bootstrap-postinst.log" 2>&1 \
       || echo "（默认插件补装未完成，不影响使用；可手动执行 bash $PLUGINS_SCRIPT）"

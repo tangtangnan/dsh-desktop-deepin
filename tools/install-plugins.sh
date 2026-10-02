@@ -66,9 +66,11 @@ for pkg in "${PLUGINS[@]}"; do
   # 曾导致真机四个插件全失败却查不到原因（v0.2.7 事故）。
   err_file="$(mktemp -u "$HOME/.dsh-desktop/plugin-add.XXXXXX")"
   mkdir -p "$HOME/.dsh-desktop" 2>/dev/null
-  if npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" plugin --profile web add "$pkg" \
+  # --profile 是 dsh 全局选项，必须在 plugin 之前（实测：放在 plugin add 之后会报
+  # "required option '--profile <name>' not specified"）。
+  if npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" --profile web plugin add "$pkg" \
        --registry "$NPM_REGISTRY" 2>"$err_file" \
-     || npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" plugin --profile web add "$pkg" 2>>"$err_file"; then
+     || npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" --profile web plugin add "$pkg" 2>>"$err_file"; then
     ok "$pkg 安装成功"
     rm -f "$err_file"
   else
