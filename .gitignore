@@ -21,12 +21,13 @@ build/
 release/
 release-unpacked/
 linux-unpacked/
-# debian/ 是 build-deb.sh 的打包暂存目录（构建产物，不入库）；
-# 但 debian/DEBIAN/postinst 是源码级控制脚本（build-deb.sh 优先引用），
-# 必须入库，故先忽略整目录再反豁免 DEBIAN。
+# debian/ 是 build-deb.sh 的打包暂存目录（构建产物，一律不入库）。
+# 唯一例外：DEBIAN/postinst 是源码级控制脚本（build-deb.sh 优先 cp 它），
+# 必须入库——此前整目录被忽略导致它从未进仓库，CI 打包一直走 heredoc 兜底。
 debian/*
 !debian/DEBIAN/
-!debian/DEBIAN/**
+debian/DEBIAN/*
+!debian/DEBIAN/postinst
 *.tsbuildinfo
 
 # --- electron-builder / Electron cache ---
