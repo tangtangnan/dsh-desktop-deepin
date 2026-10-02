@@ -36,7 +36,8 @@ if [ -z "$DSH_BIN" ]; then
   say "未找到 dsh，跳过默认插件安装（内核装好后会再触发）。"
   exit 0
 fi
-info "使用内核: $DSH_BIN"
+# 注意：「使用内核」这行不能在 check 模式打印——check 的 stdout 只允许是
+# 缺失包名（start-shell.sh 会 $(...) 捕获它）。故留到 check 分支之后再打。
 
 # ── 确保 pnpm 可用 ─────────────────────────────────────────────────────
 # dsh 的 plugin 子命令底层调用 pnpm；PATH 上没有 pnpm 时 dsh 会直接报
@@ -115,15 +116,8 @@ ensure_pnpm() {
   return 1
 }
 
-if ! ensure_pnpm; then
-  bad "没有 pnpm，且自动安装失败——dsh 的 plugin 命令依赖它，插件无法安装。"
-  say ""
-  say "  任选一种装上后重跑本脚本："
-  say "    corepack enable pnpm                      # Node 自带，最省事"
-  say "    npm i -g --prefix \"\$HOME/.local\" pnpm      # 用户级，不需要 root"
-  say ""
-  exit 0   # 缺 pnpm 不阻塞壳本身启动
-fi
+# 注意：ensure_pnpm 的「调用」放在下面清单/查重定义之后——check 模式是纯查询，
+# 不该因为缺 pnpm 就触发下载（启动时每次调用必须是零副作用、快速返回）。
 
 # ── 默认插件清单（npm 真实包名）──────────────────────────────────────────
 # 注意：dsh-market 在 npm 上的包名是无连字符的 dshmarket；
@@ -140,6 +134,38 @@ installed() {
   local pkg="$1"
   printf '%s' "$LIST_OUT" | grep -q "$pkg"
 }
+
+# ── check 模式：只查询、不安装、零副作用 ─────────────────────────────────
+# 用法：bash install-plugins.sh check
+#   全部已装 → 无输出、exit 0
+#   有缺失   → 打印缺失包名（空格分隔）、exit 1
+# start-shell.sh 启动时用它决定「是否需要弹终端补装」，因此这里绝不能
+# 触发任何下载（不能调 ensure_pnpm）。dsh 缺失时视为未知，返回 0 不打扰。
+if [ "$FORCE" = "check" ]; then
+  [ -n "$DSH_BIN" ] || exit 0
+  miss=""
+  for pkg in "${PLUGINS[@]}"; do
+    installed "$pkg" || miss="$miss $pkg"
+  done
+  if [ -n "$miss" ]; then
+    printf '%s\n' "${miss# }"
+    exit 1
+  fi
+  exit 0
+fi
+
+# ── 安装模式：打印环境信息后开始 ─────────────────────────────────────────
+info "使用内核: $DSH_BIN"
+
+if ! ensure_pnpm; then
+  bad "没有 pnpm，且自动安装失败——dsh 的 plugin 命令依赖它，插件无法安装。"
+  say ""
+  say "  任选一种装上后重跑本脚本："
+  say "    corepack enable pnpm                      # Node 自带，最省事"
+  say "    npm i -g --prefix \"\$HOME/.local\" pnpm      # 用户级，不需要 root"
+  say ""
+  exit 0   # 缺 pnpm 不阻塞壳本身启动
+fi
 
 say ""
 say "════════════════════════════════════════════════════════════════════════════════════════════════════════════"
@@ -178,6 +204,15 @@ say ""
 [ "$total" -gt 1 ] && info "本轮共 ${t_all}s（已装的插件不重装；下次运行会直接跳过）"
 if [ "$fail" -eq 0 ]; then
   ok "默认插件全部就绪"
+  # 成功印记：记下「本壳版本下插件已齐」。start-shell.sh 用它做快路径，
+  # 免得每次启动都跑一次 `dsh plugin list`（要拉起 pnpm，1~3 秒）。
+  # 版本号取自壳的 package.json——升级后版本变化 → 印记失配 → 重新查一次。
+  ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+          "$SHELL_DIR/package.json" 2>/dev/null | head -1)"
+  if [ -n "$ver" ]; then
+    mkdir -p "${HOME}/.dsh-desktop" 2>/dev/null
+    printf '%s\n' "$ver" > "${HOME}/.dsh-desktop/.plugins-ok" 2>/dev/null || true
+  fi
 else
   bad "$fail 个插件安装失败（可稍后手动执行：bash $SCRIPT_PATH force）"
 fi

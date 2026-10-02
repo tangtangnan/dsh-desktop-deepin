@@ -213,6 +213,44 @@ if [ -n "$MISSING" ]; then
   ok "运行时已全部就绪"
 fi
 
+# ── 推荐插件：检查 + 可见补齐 ────────────────────────────────────────────
+# 运行时就绪时上面的自举块不会执行（bootstrap 一见「全部就绪」就提前返回），
+# 插件也就没人装——升级用户的常态。这里补上这段：启动前检查推荐插件，缺则
+# 在**可见的终端窗口**里补齐（沿用上面「借终端重跑自己」的同一套机制与
+# DSH_BOOTSTRAP_IN_TTY 防死循环标记），让下载过程与报错都看得见。
+# 快路径：同一壳版本下已确认齐备过 → 跳过查询，避免每次启动都拉一次 pnpm。
+PLUGINS_SH="$SHELL_DIR/tools/install-plugins.sh"
+PLUGIN_STAMP="${HOME}/.dsh-desktop/.plugins-ok"
+SHELL_VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+             "$SHELL_DIR/package.json" 2>/dev/null | head -1)"
+if [ -x "$PLUGINS_SH" ] && [ -z "$MISSING" ] && [ -n "$SHELL_VER" ] \
+   && [ "$(cat "$PLUGIN_STAMP" 2>/dev/null)" != "$SHELL_VER" ]; then
+  MISSING_PLUGINS="$(bash "$PLUGINS_SH" check 2>/dev/null || true)"
+  if [ -n "$MISSING_PLUGINS" ]; then
+    if [ ! -t 0 ] && [ "${DSH_BOOTSTRAP_IN_TTY:-}" != "1" ]; then
+      # 双击启动（无终端）→ 借终端模拟器重跑自己；终端里这一轮带标记，
+      # 不会再转开，直接在窗口里就地补齐。
+      for term in deepin-terminal x-terminal-emulator gnome-terminal konsole xfce4-terminal; do
+        if command -v "$term" >/dev/null 2>&1; then
+          exec env DSH_BOOTSTRAP_IN_TTY=1 "$term" -e bash "$SCRIPT_PATH"
+        fi
+      done
+      # 极简系统连终端模拟器都没有 → 后台静默补齐，不阻塞启动（日志留档）。
+      mkdir -p "${HOME}/.dsh-desktop" 2>/dev/null
+      setsid nohup bash "$PLUGINS_SH" >>"${HOME}/.dsh-desktop/plugin-install.log" 2>&1 &
+      MISSING_PLUGINS=""
+    fi
+    if [ -n "$MISSING_PLUGINS" ]; then
+      say ""
+      say "════════════════════════════════════════════════════════"
+      say " 推荐插件补装：$MISSING_PLUGINS"
+      say "════════════════════════════════════════════════════════"
+      say ""
+      bash "$PLUGINS_SH" || true
+    fi
+  fi
+fi
+
 # ── 回填 config.json（只在检测到的路径与配置不一致时写）────────────────
 ELECTRON_CFG="$(config_value electron || true)"
 DSH_CFG="$(config_value systemDsh || true)"
