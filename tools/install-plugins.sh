@@ -68,17 +68,32 @@ ensure_pnpm() {
   if [ -z "$corepack_bin" ] && [ -x "$ndir/corepack" ]; then corepack_bin="$ndir/corepack"; fi
   if [ -n "$corepack_bin" ]; then
     info "未找到 pnpm，尝试用 Node 自带的 corepack 启用…"
+    # corepack 下载 pnpm 时只认 COREPACK_NPM_REGISTRY（不认 npm_config_registry），
+    # 必须显式指向国内镜像，否则走 registry.npmjs.org——真机实测「非常慢」。
+    # 且 enable 只建 shim，真正的下载发生在「首次调用 pnpm」时，所以这里
+    # export 让后续所有 pnpm 调用（含 dsh plugin）都走镜像。
+    export COREPACK_NPM_REGISTRY="$NPM_REGISTRY"
     if [ "${DSH_PLUGIN_DRYRUN:-}" = "1" ]; then
-      info "[dryrun] $corepack_bin enable pnpm"
+      info "[dryrun] COREPACK_NPM_REGISTRY=$NPM_REGISTRY $corepack_bin enable pnpm"
     else
-      npm_config_registry="$NPM_REGISTRY" "$corepack_bin" enable pnpm >/dev/null 2>&1 || true
+      "$corepack_bin" enable pnpm >/dev/null 2>&1 || true
     fi
     # corepack 的 shim 落在 node bin 目录；PATH 未必含它，故两处都查。
     p="$(command -v pnpm 2>/dev/null || true)"
     if [ -z "$p" ] && [ -x "$ndir/pnpm" ]; then
       export PATH="$ndir:$PATH"; p="$ndir/pnpm"
     fi
-    if [ -n "$p" ]; then PNPM_BIN="$p"; ok "pnpm 已通过 corepack 启用: $p"; return 0; fi
+    if [ -n "$p" ]; then
+      # 预热：把 corepack 首次下载 pnpm 的耗时显式暴露出来并给出预期，
+      # 免得用户以为卡死（真机反馈「这块非常慢」正是这里）。
+      info "首次启用需下载 pnpm（走国内镜像，通常 10~30 秒，请稍候）…"
+      if [ "${DSH_PLUGIN_DRYRUN:-}" = "1" ]; then
+        info "[dryrun] $p --version（预热 corepack 下载）"
+      else
+        "$p" --version >/dev/null 2>&1 || true
+      fi
+      PNPM_BIN="$p"; ok "pnpm 已就绪: $p"; return 0
+    fi
   fi
 
   # 4) 兜底：npm 装到用户目录（--prefix ~/.local，不需要 root、不碰系统目录）
@@ -132,26 +147,35 @@ say " 默认插件安装（dsh-im / pocket-relay / mcp-panel / market）"
 say "══════════════════════════════════════════════════════════════════════════════════════════════════════════"
 
 fail=0
+total="${#PLUGINS[@]}"
+idx=0
+t_all=0
 for pkg in "${PLUGINS[@]}"; do
+  idx=$((idx + 1))
   if [ "$FORCE" != "force" ] && installed "$pkg"; then
-    ok "$pkg 已安装，跳过"
+    ok "[$idx/$total] $pkg 已安装，跳过"
     continue
   fi
-  info "安装 $pkg …"
+  info "[$idx/$total] 安装 $pkg …（下载依赖中，请稍候）"
   # registry 只能通过环境变量传给 pnpm：`dsh plugin add` 不认 --registry
   # （实测报 unknown option '--registry' 且触发 too many arguments）。
   # 语序实测：`dsh plugin --profile web add <pkg>` 正确。
+  t0="$(date +%s)"
   output="$(npm_config_registry="$NPM_REGISTRY" "$DSH_BIN" plugin --profile web add "$pkg" 2>&1)"
-  if [ $? -eq 0 ]; then
-    ok "$pkg 安装成功"
+  rc=$?
+  t1="$(date +%s)"
+  dur=$((t1 - t0)); t_all=$((t_all + dur))
+  if [ "$rc" -eq 0 ]; then
+    ok "[$idx/$total] $pkg 安装成功（${dur}s）"
   else
-    bad "$pkg 安装失败，dsh/pnpm 输出如下："
+    bad "[$idx/$total] $pkg 安装失败（${dur}s），dsh/pnpm 输出如下："
     printf '%s\n' "$output" | sed 's/^/    | /' | tail -15
     fail=$((fail + 1))
   fi
 done
 
 say ""
+[ "$total" -gt 1 ] && info "本轮共 ${t_all}s（已装的插件不重装；下次运行会直接跳过）"
 if [ "$fail" -eq 0 ]; then
   ok "默认插件全部就绪"
 else
