@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.5] — 2026-10-02
 
 ### Fixed
 
@@ -78,6 +78,10 @@ All notable changes to this project are documented here. The format follows
   two seconds are always spared. The new `src/orphan-reaper.js` is covered by
   24 unit tests, and the sweep was verified against real orphaned chains on a
   live system.
+
+## [Unreleased]
+
+（暂无）
 
 ## [0.2.3] — 2026-10-01
 
