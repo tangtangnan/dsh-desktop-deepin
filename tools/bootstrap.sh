@@ -555,6 +555,9 @@ case "$cmd" in
       writeback
       say ""
       say "完成。重新运行 start-shell.sh 即可启动。"
+      # 运行时就绪后顺手装默认插件（dsh 已可用）；失败只告警不阻塞。
+      # 用 || true 兜底：脚本 set -u 下任何异常都不能影响「安装成功」的结论。
+      bash "$SHELL_DIR/tools/install-plugins.sh" || true
     else
       bad "有项目未能安装，请检查网络后重试"
       exit 1
