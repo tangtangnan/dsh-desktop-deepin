@@ -124,6 +124,29 @@ sudo apt remove deepseek-harness-desktop
 
 ---
 
+## 推荐插件（默认随运行时自动安装）
+
+以下四个社区插件由 `tools/install-plugins.sh` 在**运行时就绪后自动安装**
+（升级 deb 时 postinst 也会补装缺失的；已装的跳过、不覆盖你的版本）。
+不想要某个？`dsh plugin --profile web remove <包名>` 即可——注意升级后会
+被自动补回（查重只认「在不在」）。
+
+| 插件 | 干什么 | 链接 |
+|---|---|---|
+| **dsh-im** | 把微信、飞书、企业微信、钉钉、QQ、Telegram、WhatsApp、Slack、Discord、Matrix 等 IM 接入 DSH——在聊天软件里直接使唤你的 agent | [xmanrui/dsh-im](https://github.com/xmanrui/dsh-im) |
+| **dsh-pocket-relay** | 把 DSH 装进口袋：局域网扫码直连，或经自建 relay 中继随时随地远程访问（设备级认证、多机共存与热备、实时同屏） | [kinderao/dsh-pocket-relay](https://github.com/kinderao/dsh-pocket-relay) |
+| **dsh-mcp-panel** | MCP 管理控制台：`/mcp` 命令查看 MCP 服务器健康状态、诊断连接问题 | [PerryLink/dsh-mcp-panel](https://github.com/PerryLink/dsh-mcp-panel) |
+| **dshmarket** | 内置可视化插件市场：浏览、搜索、一键安装社区插件 | [dsh-market/dsh-market](https://github.com/dsh-market/dsh-market) |
+
+手动补装 / 强制重装：
+
+```sh
+bash /opt/deepseek-harness-desktop/tools/install-plugins.sh          # 补缺的
+bash /opt/deepseek-harness-desktop/tools/install-plugins.sh force    # 全部重装
+```
+
+---
+
 ## 功能（按实际实现）
 
 ### 内核与进程
