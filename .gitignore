@@ -21,8 +21,12 @@ build/
 release/
 release-unpacked/
 linux-unpacked/
-# deb 打包中间产物（build-deb.sh 每次重新生成，不入库）
-debian/
+# debian/ 是 build-deb.sh 的打包暂存目录（构建产物，不入库）；
+# 但 debian/DEBIAN/postinst 是源码级控制脚本（build-deb.sh 优先引用），
+# 必须入库，故先忽略整目录再反豁免 DEBIAN。
+debian/*
+!debian/DEBIAN/
+!debian/DEBIAN/**
 *.tsbuildinfo
 
 # --- electron-builder / Electron cache ---

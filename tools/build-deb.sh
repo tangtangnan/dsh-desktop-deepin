@@ -151,12 +151,24 @@ Description: DeepSeek Harness 桌面壳（Deepin / UOS / Linux $NODE_ARCH_LABEL�
 Homepage: https://github.com/westanke/dsh-desktop-deepin
 EOF
 
+# conffiles：把全局 config.json 声明为受 dpkg 保护的配置文件。
+# 没有这行时，升级包会无脑覆盖 /opt/$PKG_NAME/config.json——用户在
+# 全局份做的修改被抹掉，且新版新增的配置键/注释也到不了老用户手里。
+# 声明后 dpkg 的行为：用户没改过 → 正常更新为新版；用户改过 → 保留用户版，
+# 新版默认配置落为 config.json.dpkg-dist 供参考（Debian 标准语义）。
+# start-shell.sh 已打印生效的 config 路径，用户覆盖份（~/.config/…）不受影响。
+cat > "$STAGE/DEBIAN/conffiles" <<EOF
+/opt/$PKG_NAME/config.json
+EOF
+
 # postinst：安装后跑一次自检
+# 优先用仓库里的 debian/DEBIAN/postinst（单一事实来源）；此处 heredoc 仅为
+# 该文件缺失时的兜底，目录必须与 PKG_NAME 一致（/opt/deepseek-harness-desktop）。
 cp "$ROOT/debian/DEBIAN/postinst" "$STAGE/DEBIAN/postinst" 2>/dev/null || \
   cat > "$STAGE/DEBIAN/postinst" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-INSTALL_DIR="/opt/dsh-desktop-deepin"
+INSTALL_DIR="/opt/deepseek-harness-desktop"
 BOOTSTRAP="$INSTALL_DIR/tools/bootstrap.sh"
 echo ""
 echo "DeepSeek Harness Desktop 已安装到 $INSTALL_DIR"
