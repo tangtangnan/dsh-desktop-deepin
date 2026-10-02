@@ -311,7 +311,7 @@ Debian/UOS 基础系统里必定存在。这是刻意的：它的职责是「检
 
 ```sh
 npm install              # 壳依赖与类型
-npm test                 # 单元测试 253 个，不联网、不需要 Electron
+npm test                 # 单元测试 257 个，不联网、不需要 Electron
 npm run typecheck        # tsc --noEmit
 npm run doctor           # 运行时自检：Electron / Node / dsh 就绪情况
 npm start                # 启动

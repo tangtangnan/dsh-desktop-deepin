@@ -79,6 +79,41 @@ All notable changes to this project are documented here. The format follows
   24 unit tests, and the sweep was verified against real orphaned chains on a
   live system.
 
+## [0.2.7] — 2026-10-02
+
+### 新增
+
+- **默认插件自举安装**：新增 `tools/install-plugins.sh`，在运行时就绪后自动安装
+  四个推荐插件（`@xmanrui/dsh-im`、`dsh-pocket-relay`、`dsh-mcp-panel`、
+  `dshmarket`）。脚本幂等（已装的跳过）、单插件失败不阻塞；接入 bootstrap
+  安装成功路径，postinst 在升级场景也独立补装一次（升级时运行时已就绪、
+  bootstrap 会提前退出，故单独调用）。新装用户开箱即得四插件。
+
+### 修复
+
+- **升级不再覆盖全局配置**：deb 生成 `DEBIAN/conffiles` 声明
+  `/opt/deepseek-harness-desktop/config.json`。
+  此前升级包会无脑覆盖全局 config.json；声明后用户改过的配置保留，新版默认
+  配置落为 `.dpkg-dist` 供参考（Debian 标准语义）。
+- **postinst 安装目录笔误**：`INSTALL_DIR` 误写为 `/opt/dsh-desktop-deepin`
+  （少 harness），导致 postinst 找不到 bootstrap.sh——「装完后台预下载运行时」
+  自上线以来从未真正生效，提示的安装路径也是错的。修正为
+  `/opt/deepseek-harness-desktop`，与 PKG_NAME 一致。
+- **仓库卫生**：`debian/` 打包暂存副本曾被误提交进仓库（与真实源码形成两份
+  漂移副本），已全部移出追踪；`.gitignore` 精确豁免源码级
+  `debian/DEBIAN/postinst`（此前整目录忽略把它挡在库外，CI 打包一直走
+  heredoc 兜底）。
+
+## [0.2.6] — 2026-10-02
+
+### 修复
+
+- **老 dpkg 装不上新 deb（zstd 兼容）**：GitHub runner 镜像升级后，
+  `dpkg-deb` 1.22+ 默认改用 zstd 压缩，Deepin 20 / arm64 真机（dpkg 1.19）
+  报「对成员 control.tar.zst 使用了未知的压缩」。`build-deb.sh` 打包显式
+  `-Zgzip`（所有 dpkg 版本的最小公约数，体积 110K→148K 可忽略）。
+  v0.2.4/v0.2.5 的 deb 受影响，v0.2.6 起恢复。
+
 ## [Unreleased]
 
 （暂无）
