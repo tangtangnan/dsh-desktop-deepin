@@ -79,6 +79,27 @@ All notable changes to this project are documented here. The format follows
   24 unit tests, and the sweep was verified against real orphaned chains on a
   live system.
 
+## [0.2.10] — 2026-10-02
+
+### 修复
+
+- **推荐插件自动安装的最后一层障碍：目标机没有 pnpm**。`dsh plugin` 子命令底层
+  调用 pnpm，PATH 上没有 pnpm 时 dsh 直接失败：
+  `dsh: pnpm was not found; install pnpm and make it available on PATH.`
+  用 nvm 装的 Node 默认不带 pnpm，因此 arm64 真机上四个插件全部安装失败
+  （v0.2.7 的转义问题、v0.2.8 的语序问题修好后，这一层才暴露出来）。
+  `tools/install-plugins.sh` 新增 `ensure_pnpm`，按「复用优先、零下载优先」的
+  顺序保证 pnpm 可用：
+  1. PATH 里已有 pnpm → 直接使用；
+  2. 与 dsh（即 node）同目录，以及 `/usr/local/bin`、`~/.local/bin` 等常见位置
+     → 命中即复用并把其目录加入 PATH（dsh 靠 PATH 找 pnpm）；
+  3. Node 自带的 `corepack` → 就地 `corepack enable pnpm`（含 `$ndir/corepack`
+     回退，应对 postinst 经 `runuser` 调用时 PATH 精简的情况）；
+  4. 兜底：`npm install -g --prefix ~/.local pnpm`——用户级安装，不需要 root，
+     不碰系统目录。
+  四条路径都已实测（修改性分支用 `DSH_PLUGIN_DRYRUN=1` 干跑验证，不产生副作用）；
+  全部失败时给出明确的手动安装指引，且不阻塞壳本身启动。
+
 ## [0.2.9] — 2026-10-02
 
 ### 修复
