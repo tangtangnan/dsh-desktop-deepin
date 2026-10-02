@@ -79,6 +79,30 @@ All notable changes to this project are documented here. The format follows
   24 unit tests, and the sweep was verified against real orphaned chains on a
   live system.
 
+## [0.2.11] — 2026-10-02
+
+### 新增
+
+- **缺插件时弹出终端窗口可见补装**。此前「插件没装/装失败」用户完全看不见：
+  运行时就绪时 `bootstrap.sh` 一见「全部就绪」就提前返回，首启根本不检查插件
+  （升级用户的常态）；`postinst` 的输出又全部重定向进日志。现在 `start-shell.sh`
+  启动前会检查推荐插件，缺了就在可见的终端窗口里补齐——沿用首启下载运行时那套
+  「借终端重跑自己」的机制与防死循环标记，下载进度与报错都看得见；连终端模拟器
+  都没有的极简系统则退回后台静默补齐，日志落 `~/.dsh-desktop/plugin-install.log`。
+- **`install-plugins.sh check` 模式**：纯查询、零副作用（不会因为缺 pnpm 就触发
+  下载），stdout 只输出缺失包名，供启动流程判断是否需要补装。
+- **版本印记快路径**：补齐成功后写 `~/.dsh-desktop/.plugins-ok`（内容为壳版本），
+  同一版本下启动时直接跳过插件查询，避免每次启动都拉起一次 pnpm。
+
+### 修复
+
+- **`corepack` 下载 pnpm 不再走国外源**：corepack 只认 `COREPACK_NPM_REGISTRY`
+  （不认 `npm_config_registry`），且 `corepack enable` 只建 shim、真正的下载发生在
+  首次调用 pnpm 时——真机上表现为「enable 之后长时间无输出」。现在显式把
+  `COREPACK_NPM_REGISTRY` 指向国内镜像（覆盖后续所有 pnpm 调用），并在预热时
+  提示「首次需下载 pnpm，通常 10~30 秒」。
+- **插件安装进度可见**：每个插件显示 `[i/4]` 与本次耗时，结尾汇总总耗时。
+
 ## [0.2.10] — 2026-10-02
 
 ### 修复
