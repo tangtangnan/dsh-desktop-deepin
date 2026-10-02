@@ -79,6 +79,22 @@ All notable changes to this project are documented here. The format follows
   24 unit tests, and the sweep was verified against real orphaned chains on a
   live system.
 
+## [0.2.8] — 2026-10-02
+
+### 修复
+
+- **升级后推荐插件没有自动安装**。三层问题叠加，真机零报错、极难排查：
+  1. `postinst` 插件补装段写在 quoted heredoc（`<<'EOF'`）里却按 unquoted
+     习惯把 `$` 转义成 `\$`——quoted heredoc 原样保留 `\$`，导致
+     `[ -x "\$PLUGINS_SCRIPT" ]` 恒假、整段静默跳过；
+  2. `dsh plugin add` 的正确语序是 `dsh plugin --profile web add <pkg>`
+     （`--profile` 跟在 `plugin` 之后）；写成 `dsh --profile web plugin add`
+     会把 `plugin`/`add`/包名全部当成主服务参数；
+  3. `dsh plugin add` 不认 `--registry` flag（报 unknown option），registry
+     只能通过 `npm_config_registry` 环境变量传给底层 pnpm。
+- **安装失败不再吞报错**：失败时打印 dsh/pnpm 的真实输出（末 15 行），
+  临时文件写 `~/.dsh-desktop/`（不用 /tmp）。
+
 ## [0.2.7] — 2026-10-02
 
 ### 新增
