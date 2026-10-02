@@ -64,17 +64,18 @@ else
 fi
 
 # 默认插件补装（升级用户也覆盖到；独立于 bootstrap 的预下载路径）。
+# 注意：本 heredoc 定界符是 'EOF'（quoted，不做变量展开），所以这里的
+# $ 一律写裸的，绝不能加反斜杠——\$ 会被原样写进 postinst 导致条件恒假。
 PLUGINS_SCRIPT="$INSTALL_DIR/tools/install-plugins.sh"
-if [ -x "\$PLUGINS_SCRIPT" ]; then
-  INSTALL_USER="\${INSTALL_USER:-}"
-  if [ -z "\$INSTALL_USER" ] || [ "\$INSTALL_USER" = "root" ]; then
-    INSTALL_USER="\$(loginctl list-users --no-legend 2>/dev/null | awk '{print \$2}' | grep -v '^root\$' | head -1)"
+if [ -x "$PLUGINS_SCRIPT" ]; then
+  if [ -z "${INSTALL_USER:-}" ] || [ "$INSTALL_USER" = "root" ]; then
+    INSTALL_USER="$(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}' | grep -v '^root$' | head -1)"
   fi
-  if [ -n "\$INSTALL_USER" ] && [ "\$INSTALL_USER" != "root" ] && id "\$INSTALL_USER" >/dev/null 2>&1; then
+  if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ] && id "$INSTALL_USER" >/dev/null 2>&1; then
     echo "检查默认插件（dsh-im / pocket-relay / mcp-panel / market）…"
-    runuser -u "\$INSTALL_USER" -- bash "\$PLUGINS_SCRIPT" \
-      >>"/home/\$INSTALL_USER/.dsh-desktop/bootstrap-postinst.log" 2>&1 \
-      || echo "（默认插件补装未完成，不影响使用；可手动执行 bash \$PLUGINS_SCRIPT）"
+    runuser -u "$INSTALL_USER" -- bash "$PLUGINS_SCRIPT" \
+      >>"/home/$INSTALL_USER/.dsh-desktop/bootstrap-postinst.log" 2>&1 \
+      || echo "（默认插件补装未完成，不影响使用；可手动执行 bash $PLUGINS_SCRIPT）"
   fi
 fi
 exit 0
