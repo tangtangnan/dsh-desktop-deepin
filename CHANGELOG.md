@@ -4,80 +4,9 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.5] — 2026-10-02
+## [Unreleased]
 
-### Fixed
-
-- **`tsc --noEmit` passes again — CI's red "Type check" step is addressable.**
-  `src/permissions.js` carried four implicit-`any` parameters and `src/update.js`
-  declared `updates` twice in the same function; under `strict` + `checkJs` both
-  fail the type check, and since both files were already on `main`, every CI run
-  went red regardless of the 253 green unit tests. The permission decision is now
-  a typed module-level function, and the duplicated declaration is gone.
-- **The kernel e2e job runs on ubuntu, the platform this shell actually ships.**
-  The matrix previously listed `windows-latest` and `macos-latest` only — the one
-  platform this Linux-only project publishes for had no end-to-end coverage, while
-  two it explicitly does not target were tested on every push.
-- **A permissions assertion guards every deb build against the EACCES
-  regression.** Commit `d81cb11` fixed limited file modes (e.g. `0600`) leaking
-  into the package and crashing Electron for non-root users once installed under
-  `/opt`; nothing prevented a recurrence. `package-linux.yml` now unpacks the
-  built deb's listing and fails the build if any file outside `DEBIAN/` lacks an
-  other-user read bit (verified against both a healthy package and a deliberately
-  broken one locally). Repository-side file modes are normalised as well.
-- **Package metadata points at this repository, not the upstream baseline.**
-  `homepage`, `repository.url`, `bugs.url` and `author` in `package.json` were
-  inherited from `sleep2agi/DeepSeek-Harness-Desktop`, so a "report a problem"
-  click would open someone else's issue tracker. They now name
-  `westanke/dsh-desktop-deepin`. The dead electron-builder configuration
-  (`win`/`nsis`, `mac`/`dmg`/`entitlements`, `AppImage`, `pack`, `dist:win`,
-  `dist:mac`) is removed — this project ships Linux debs only — and
-  `prepack:app` now runs the type check before packaging. `version` is aligned
-  with the latest tag (v0.2.3).
-
-### Added
-
-- **The installer pre-downloads the runtimes in the background, under your own
-  account.** `postinst` runs as root, but the runtimes belong in the installing
-  user's `~/.dsh-desktop/runtime`, so it now resolves the real login user
-  (`$SUDO_USER` → `loginctl` → the first real `/home` entry) and drops
-  privileges with `runuser`/`su` before starting the download. The download is
-  detached (`setsid` + `nohup`) so `apt install` returns immediately instead of
-  appearing to hang for minutes on the 180 MB Electron — by the time the user
-  clicks the launcher it is usually already there, which is the
-  "works right after install" feel without shipping a 152 MB offline deb. Opt
-  out with `DSH_NO_POSTINST_DOWNLOAD=1`. `bootstrap.sh install` now takes an
-  atomic `mkdir` lock so a concurrent launch cannot race it on the same
-  `.partial` file, and `start-shell.sh` waits on that lock (with visible
-  progress) instead of downloading twice.
-
-
-- **Downloads are checksum-verified on both install paths.** The shell-side
-  installer (`src/runtime-install.js`) verified Node but trusted the HTTPS
-  origin for Electron, the largest and therefore most attractive component;
-  it now fetches the Electron release's `SHASUMS256.txt` (both China mirrors
-  sync it) and refuses a substituted archive, degrading to origin-only
-  integrity — loudly — when a mirror serves no manifest. The pure-shell
-  bootstrap (`tools/bootstrap.sh`) verified nothing for either runtime; it now
-  runs the same manifest check for Node and Electron (verified live: a clean
-  download passes, a single flipped byte is rejected).
-- **Orphan reaper: dead kernels no longer leak their MCP servers.** The kernel
-  launches MCP servers through `npm exec` chains, and when a kernel died
-  without a planned stop (a crash, or the market helper swapping the process),
-  every chain was re-parented to init and lived on forever — repeated restarts
-  accumulated a fresh crop of `excel-mcp-server` processes nobody owned. The
-  shell now injects an attribution marker (`ELECTRON_USER_DATA`, chosen
-  because the kernel strips `DSH_*` variables before handing its environment
-  to MCP children) into the kernel it spawns; the whole process family carries
-  it. After an unexpected exit, when restarts are exhausted, on user-initiated
-  restarts and at shutdown, the shell walks `/proc` and TERMs every marked
-  tree that can no longer reach a live kernel — escalating to SIGKILL after a
-  grace period. Processes that look like a kernel (`--profile` + `--port` on
-  their command line) are never reaped, so a second shell window's kernel and
-  an unsupervised replacement kernel survive the sweep; processes younger than
-  two seconds are always spared. The new `src/orphan-reaper.js` is covered by
-  24 unit tests, and the sweep was verified against real orphaned chains on a
-  live system.
+（暂无）
 
 ## [0.2.11] — 2026-10-02
 
@@ -184,9 +113,80 @@ All notable changes to this project are documented here. The format follows
   `-Zgzip`（所有 dpkg 版本的最小公约数，体积 110K→148K 可忽略）。
   v0.2.4/v0.2.5 的 deb 受影响，v0.2.6 起恢复。
 
-## [Unreleased]
+## [0.2.5] — 2026-10-02
 
-（暂无）
+### Fixed
+
+- **`tsc --noEmit` passes again — CI's red "Type check" step is addressable.**
+  `src/permissions.js` carried four implicit-`any` parameters and `src/update.js`
+  declared `updates` twice in the same function; under `strict` + `checkJs` both
+  fail the type check, and since both files were already on `main`, every CI run
+  went red regardless of the 253 green unit tests. The permission decision is now
+  a typed module-level function, and the duplicated declaration is gone.
+- **The kernel e2e job runs on ubuntu, the platform this shell actually ships.**
+  The matrix previously listed `windows-latest` and `macos-latest` only — the one
+  platform this Linux-only project publishes for had no end-to-end coverage, while
+  two it explicitly does not target were tested on every push.
+- **A permissions assertion guards every deb build against the EACCES
+  regression.** Commit `d81cb11` fixed limited file modes (e.g. `0600`) leaking
+  into the package and crashing Electron for non-root users once installed under
+  `/opt`; nothing prevented a recurrence. `package-linux.yml` now unpacks the
+  built deb's listing and fails the build if any file outside `DEBIAN/` lacks an
+  other-user read bit (verified against both a healthy package and a deliberately
+  broken one locally). Repository-side file modes are normalised as well.
+- **Package metadata points at this repository, not the upstream baseline.**
+  `homepage`, `repository.url`, `bugs.url` and `author` in `package.json` were
+  inherited from `sleep2agi/DeepSeek-Harness-Desktop`, so a "report a problem"
+  click would open someone else's issue tracker. They now name
+  `westanke/dsh-desktop-deepin`. The dead electron-builder configuration
+  (`win`/`nsis`, `mac`/`dmg`/`entitlements`, `AppImage`, `pack`, `dist:win`,
+  `dist:mac`) is removed — this project ships Linux debs only — and
+  `prepack:app` now runs the type check before packaging. `version` is aligned
+  with the latest tag (v0.2.3).
+
+### Added
+
+- **The installer pre-downloads the runtimes in the background, under your own
+  account.** `postinst` runs as root, but the runtimes belong in the installing
+  user's `~/.dsh-desktop/runtime`, so it now resolves the real login user
+  (`$SUDO_USER` → `loginctl` → the first real `/home` entry) and drops
+  privileges with `runuser`/`su` before starting the download. The download is
+  detached (`setsid` + `nohup`) so `apt install` returns immediately instead of
+  appearing to hang for minutes on the 180 MB Electron — by the time the user
+  clicks the launcher it is usually already there, which is the
+  "works right after install" feel without shipping a 152 MB offline deb. Opt
+  out with `DSH_NO_POSTINST_DOWNLOAD=1`. `bootstrap.sh install` now takes an
+  atomic `mkdir` lock so a concurrent launch cannot race it on the same
+  `.partial` file, and `start-shell.sh` waits on that lock (with visible
+  progress) instead of downloading twice.
+
+
+- **Downloads are checksum-verified on both install paths.** The shell-side
+  installer (`src/runtime-install.js`) verified Node but trusted the HTTPS
+  origin for Electron, the largest and therefore most attractive component;
+  it now fetches the Electron release's `SHASUMS256.txt` (both China mirrors
+  sync it) and refuses a substituted archive, degrading to origin-only
+  integrity — loudly — when a mirror serves no manifest. The pure-shell
+  bootstrap (`tools/bootstrap.sh`) verified nothing for either runtime; it now
+  runs the same manifest check for Node and Electron (verified live: a clean
+  download passes, a single flipped byte is rejected).
+- **Orphan reaper: dead kernels no longer leak their MCP servers.** The kernel
+  launches MCP servers through `npm exec` chains, and when a kernel died
+  without a planned stop (a crash, or the market helper swapping the process),
+  every chain was re-parented to init and lived on forever — repeated restarts
+  accumulated a fresh crop of `excel-mcp-server` processes nobody owned. The
+  shell now injects an attribution marker (`ELECTRON_USER_DATA`, chosen
+  because the kernel strips `DSH_*` variables before handing its environment
+  to MCP children) into the kernel it spawns; the whole process family carries
+  it. After an unexpected exit, when restarts are exhausted, on user-initiated
+  restarts and at shutdown, the shell walks `/proc` and TERMs every marked
+  tree that can no longer reach a live kernel — escalating to SIGKILL after a
+  grace period. Processes that look like a kernel (`--profile` + `--port` on
+  their command line) are never reaped, so a second shell window's kernel and
+  an unsupervised replacement kernel survive the sweep; processes younger than
+  two seconds are always spared. The new `src/orphan-reaper.js` is covered by
+  24 unit tests, and the sweep was verified against real orphaned chains on a
+  live system.
 
 ## [0.2.3] — 2026-10-01
 
