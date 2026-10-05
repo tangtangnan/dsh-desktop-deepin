@@ -9,14 +9,113 @@
   <img alt="typecheck" src="https://img.shields.io/badge/tsc--noEmit-0%20errors-success">
 </p>
 
-**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a ~106 KB deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors; an offline variant with everything bundled can be built locally for air-gapped machines. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and 257 unit tests plus a real-kernel e2e keep it that way.
+**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a ~150 KB deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors; an offline variant with everything bundled can be built locally for air-gapped machines. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and 257 unit tests plus a real-kernel e2e keep it that way.
 
 面向 Deepin / UOS / Linux 的 DeepSeek Harness 桌面壳。把命令行 agent 运行时
 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
 
 > **状态**：可用。单测 257/257 通过、`tsc --noEmit` 零错误、内核 e2e 5/5，已在
-> Deepin 25 上真机验证（窗口加载、内核就绪、托盘、菜单）。内核是上游开发预览版，
-> 配置面仍在变化。
+> UOS Desktop 20 Professional（glibc 2.31）与 Deepin 25 上真机验证（窗口加载、内核就绪、
+> 托盘、菜单）。内核是上游开发预览版，配置面仍在变化。
+
+---
+
+## 项目特色
+
+同类 DSH 桌面壳不止一个，取舍各不相同。本壳把三件事放在首位：**跑在中国 Linux 上**、
+**安装包尽可能小**、**崩了也退得回去**。
+
+### Linux ARM64：同类壳里目前只有这一家出包
+
+同类壳的 Linux 产物都只覆盖 x64——`anywhere-labs/dsh-desktop` 的 release notes 直接写着
+「ARM64 packages are not provided」；`dsh-tauri/deepseek-harness-desktop` 的 Linux 资产只有
+`amd64.deb` 与 `amd64.AppImage`；`dataelement/dsh-desktop` 最新版只挂了 macOS 与 Windows 产物。
+（三家都有 `aarch64` 文件，但那是 macOS 的 `.dmg`，不是 Linux。）
+
+本壳同时发布 `amd64` 与 `arm64` 两个 deb，覆盖国产 ARM 整机、ARM 云主机与 arm64 开发板。
+两个包文件名按架构区分、内容一致，首启各自下载对应架构的运行时。
+
+### Deepin / UOS 是第一目标平台，不是顺带
+
+| 坑 | 本壳的处理 |
+|---|---|
+| `/etc/timezone` 是 `Asia/Beijing`、`PRC` 等 Chromium 不认的名字 | 开窗前映射为 `Asia/Shanghai`，否则页面时间全错 |
+| 缺终端模拟器 | 按 `deepin-terminal → x-terminal-emulator → gnome-terminal → konsole → xfce4-terminal` 依次降级，都没有则回退后台补齐 |
+| 原生目录对话框不一定存在 | 有 `zenity` / `kdialog` 才用原生，否则自动降级为浏览模式 |
+| 首次双击被问「是否信任该应用」 | 已写入文档——「点了没反应」通常是这个询问，不是启动失败 |
+
+**验证环境**：UOS Desktop 20 Professional（专业版 `Y2020E0001`，内核 `4.19.0-amd64-desktop`，
+海光 C86-3G，x86_64，**glibc 2.31** / GLIBC 符号上限 2.30，libstdc++ 上限 GLIBCXX_3.4.25）
+与 Deepin 25——窗口加载、内核就绪、托盘、菜单均通过。
+
+### 为什么是 Electron 而不是 Tauri 2
+
+Tauri 体积小、内存低，看着是更"现代"的选择，社区里也有同类壳走了这条路。但它在
+**本项目的目标系统上根本装不上**，原因都是实测出来的：
+
+| 障碍 | 实测数据 |
+|---|---|
+| **Tauri 2 强制依赖 `libwebkit2gtk-4.1`**（Tauri 2.0 起在 Linux 上从 4.0 迁到 4.1，见 [官方迁移说明](https://tauri.ubitools.com/fr/blog/tauri-2-0-0-alpha-3/)） | UOS 20 的 apt 源里**只有 `libwebkit2gtk-4.0-37`**；`apt-cache search webkit2gtk` 搜遍仓库，**没有任何 4.1 包**，也装不上 |
+| 系统 WebView 版本碎片化 | 各发行版的 webkit2gtk 版本差得远（4.0 / 4.1、2.38 / 2.44），同一份产物在不同系统上行为不一致 |
+| 老系统的库基线 | 本系统 glibc **2.31**、GLIBCXX 上限 3.4.25；社区预编译二进制普遍要求更高（实测过别的预编译工具因 `libffi.so.8`、`GLIBCXX_3.4.29` 直接加载失败） |
+| 同类壳的对照 | 走 Tauri 2 的那个壳，其 Linux 包自述「基于 Ubuntu 22.04 构建」——glibc 2.35 基线，与本类系统存在代差 |
+
+**Electron 的取舍正好相反**：它自带 Chromium，**不依赖系统 WebView**，所以 Deepin 20 /
+UOS 20 这类老系统与 Deepin 25 / UOS 25 这类新系统跑的是**同一个浏览器内核**，行为可预期；
+代价是首次启动要下载约 180 MB 运行时——而这一点被「deb 只装 150 KB 壳代码 + 装完后台
+预下载」抵掉了。
+
+> 一句话：选 Electron 不是因为它小（它不小），而是因为它**把不确定性从用户的系统搬进了
+> 自己的包**。对一个以国产老系统为首要目标的壳，这个交换是划算的。
+>
+> 补一句实话：本壳的代码基线本就来自一个 Electron 壳，改用 Tauri 意味着重写窗口、托盘、
+> 菜单与进程治理全部上层——但即便从零开始，上面第一条（WebView 依赖）也足以让 Tauri 2 出局。
+
+### 安装包约 150 KB，运行时按需获取
+
+deb 里**只有壳的代码**，不含 Electron（约 364 MB）、Node（约 25 MB）与 dsh 内核（约 30 MB）。
+装完后 `postinst` 会**以你自己的账号**在后台预下载，等你去点启动器时通常已经就绪——
+「装完即用」的体验，而包还是 150 KB。机器上已有可复用的运行时则完全不下。
+
+### 开箱自带四个插件，不用去市场翻
+
+首次启动（以及每次 deb 升级）会自动补齐下面四个社区插件。已装的**不覆盖你的版本**，
+升级后缺失的会被补回。四个都各自解决一件「用得下去」的刚需，其中 `dshmarket`（★5.5k）
+与 `dsh-im`（★1.6k）是社区里最热的两块：
+
+| 插件 | 它让你能做什么 |
+|---|---|
+| **dsh-im** | 把 agent 接进你已经在用的聊天软件——飞书、微信、企业微信、钉钉、QQ、Slack、Telegram、Discord、WhatsApp 共 9 个通道，扫码或凭据即可接入。人不必坐在电脑前，在 IM 里就能使唤 agent |
+| **dshmarket** | 内置可视化插件市场：浏览、搜索、一键安装。想再要点什么，不必去记 npm 包名 |
+| **dsh-pocket-relay** | 把 DSH 装进口袋：局域网扫码直连，或经自建 relay 中继随时随地远程访问；设备级认证、多机共存与热备、实时同屏 |
+| **dsh-mcp-panel** | MCP 管理控制台：`/mcp` 查看各 MCP 服务器的健康状态与连接诊断；设置页带服务器增删改（写入需审批、自动备份）与工具试调用台 |
+
+**为什么值得默认装**：这四个恰好覆盖「能远程使唤」（`dsh-im` / `dsh-pocket-relay`）、
+**能自己找插件**（`dshmarket`）、**出问题能自己诊断**（`dsh-mcp-panel`）四件刚需——
+装完就有，不必先知道它们存在。补装/强制重装见下文「推荐插件」。
+
+> 不想要某个？`dsh plugin --profile web remove <包名>`。注意升级 deb 后会按「在不在」
+> 补回，除非改 `tools/install-plugins.sh`。
+
+### 失败路径都被认真对待
+
+| 问题 | 处理 |
+|---|---|
+| 插件把内核搞崩，壳自己进不去、也没法卸插件（死锁） | **安全模式**：停用全部第三方 bundle，用户 patch 层备份改名，且不持久化 |
+| 内核非正常退出后，`npm exec` 拉起的 MCP 服务器被 init 收养、永远活着 | **孤儿收割**：给内核注入进程印记，退出后扫描 `/proc` 按印记收割整棵进程树（24 个单测） |
+| 端口开着但其实不是我们的内核 | **就绪判定必须拿到真实 HTTP 响应**，端口占用不算 |
+| 崩溃后一片空白 | 崩溃报告落盘（保留最新 10 份）+ 日志进缓冲区即脱敏 + 渲染进程 60 秒内自愈 3 次 |
+
+### 供应链可验证，且失败时不静默
+
+Electron 与 Node 的下载都校验对应版本的 `SHASUMS256.txt`；国内镜像若未同步该清单，
+会**大声降级为「仅信任 HTTPS 来源」**并提示，而不是悄悄跳过校验。
+
+### 多用户机器不掉坑
+
+全局配置 `/opt/.../config.json` 只读、所有人共用；每用户覆盖份在
+`~/.config/dsh-desktop/config.json`，键级合并。运行时下载到用户家目录，
+**不需要 root、不碰系统目录**，卸载也不动你的会话数据。
 
 ---
 
@@ -27,10 +126,10 @@
 
 | 格式 | 覆盖系统 | 说明 |
 |---|---|---|
-| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 在线版，约 106 KB；装到 `/opt`，注册启动器与图标，首启下载运行时 |
+| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 在线版，约 150 KB；装到 `/opt`，注册启动器与图标，首启下载运行时 |
 | `*-offline-*.deb`（自建） | 同上 | **不在 release 提供**。有内网/离线机需求时自己打：见下文「离线双通道」 |
 
-### 安装包只有约 1 MB——因为运行时按需获取
+### 安装包只有约 150 KB——因为运行时按需获取
 
 **这一点必须在安装前知道：首次启动会下载 Electron（约 180 MB），需要等几分钟。**
 
@@ -42,7 +141,7 @@
 | Node 运行时 | 约 25 MB | 你机器上多半已经有了，内核可以直接用系统的 |
 | dsh 内核 | 约 30 MB | 同上；而且内核升级频繁，打进包会很快过时 |
 
-把这三样打进去，安装包会从 **1 MB 膨胀到 250 MB 以上**，而其中 90% 的内容对
+把这三样打进去，安装包会从 **150 KB 膨胀到 250 MB 以上**，而其中 90% 的内容对
 「已经装过 dsh 的机器」是重复的。所以本包采取按需获取：
 
 ```sh
@@ -101,7 +200,7 @@ sudo apt install ./DeepSeek-Harness-Desktop-<版本>-amd64.deb
 
 `apt install` 结束后，安装脚本会以**你自己的账号**（不是 root）在后台自动开始
 下载运行时 —— 所以绝大多数情况下，等你双击启动器时它已经就绪，跟「装完即用」
-没区别，而包还是只有 106 KB。
+没区别，而包还是只有 150 KB。
 
 - 下载在后台跑，`apt install` 立即返回，不会卡住安装进度
 - 日志：`~/.dsh-desktop/bootstrap-postinst.log`
@@ -363,7 +462,7 @@ bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 ```
 
 产物在 `release/`。**本地打包不会下载内核、Node 或 Electron**——这三样由最终用户
-运行时按需获取（见「下载与安装」），deb 里只有约 1 MB 的壳代码。
+运行时按需获取（见「下载与安装」），deb 里只有约 150 KB 的壳代码。
 
 **离线双通道（自建，不在 release 提供）**：给无法稳定访问网络的机器打全自带包——
 
