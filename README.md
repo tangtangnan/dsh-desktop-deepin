@@ -468,10 +468,15 @@ bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 
 ```sh
 # 1. 先把两个官方运行时压缩包放到 release/（npmmirror 或官方源均可）
-curl -L -o release/node-v24.19.0-linux-x64.tar.gz \
-  https://npmmirror.com/mirrors/node/v24.19.0/node-v24.19.0-linux-x64.tar.gz
-curl -L -o release/electron-v33.3.0-linux-x64.zip \
-  https://npmmirror.com/mirrors/electron/v33.3.0/electron-v33.3.0-linux-x64.zip
+#    版本不要手写：跟随 tools/bootstrap.sh 的 NODE_WANT / ELECTRON_WANT。
+#    手写的话主程序升级后会与期望版本对不上，内嵌的运行时等于白装。
+ARCH_LABEL=x64      # amd64 用 x64，arm64 机器改为 arm64（与 build-deb.sh 的映射一致）
+NODE_VER="$(sed -n 's/^NODE_WANT="\(.*\)"/\1/p' tools/bootstrap.sh)"
+ELECTRON_VER="$(sed -n 's/^ELECTRON_WANT="\(.*\)"/\1/p' tools/bootstrap.sh)"
+curl -L -o "release/node-${NODE_VER}-linux-${ARCH_LABEL}.tar.gz" \
+  "https://npmmirror.com/mirrors/node/${NODE_VER}/node-${NODE_VER}-linux-${ARCH_LABEL}.tar.gz"
+curl -L -o "release/electron-${ELECTRON_VER}-linux-${ARCH_LABEL}.zip" \
+  "https://npmmirror.com/mirrors/electron/${ELECTRON_VER}/electron-${ELECTRON_VER}-linux-${ARCH_LABEL}.zip"
 
 # 2. 加 --offline 打包，产物名带 -offline 后缀（约 150MB）
 bash tools/build-deb.sh amd64 <版本> --offline
