@@ -69,6 +69,29 @@ is deliberately a decision someone makes, rather than something a rebuild does q
 - Describe what you actually verified. "Ran the app on macOS 15 arm64 and the window opened"
   is more useful than "should work".
 
+## Cutting a release
+
+`CHANGELOG.md` is the user-facing record of what shipped, so a tag is only honest if the
+changelog was updated first. Order matters as much as content:
+
+1. Rename the top `## [Unreleased]` heading to `## [<version>] — YYYY-MM-DD`.
+2. Insert the fresh, empty `## [Unreleased]` **at the top of the file**, directly under the
+   `# Changelog` preamble and above the version you just named.
+3. Leave every other version section in strictly descending order.
+4. Align `version` in `package.json` with the tag. The tag name is what decides the deb
+   filename in CI; `package.json` is only the fallback reading.
+5. Commit, push both remotes, then push the tag — the tag is what starts the package build.
+
+Steps 2 and 3 exist because both have been got wrong. An `[Unreleased]` inserted above the
+*oldest* section, or a new version section placed after an older one, leaves the file in a
+state where the first screen shows a release from several versions ago. Nothing fails: the
+tests stay green and the package still builds, so the mistake survives until someone opens
+the changelog and draws the wrong conclusion about where the project is.
+
+The invariant is one line: **a reader opening this file sees the current state of the
+project without scrolling.** If the newest section is not the first one, the changelog is
+lying by omission.
+
 ## Reporting a problem
 
 Startup failures are the most common category, and the shell captures the kernel's output
