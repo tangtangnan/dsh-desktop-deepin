@@ -78,9 +78,19 @@ export function registerShellScheme(protocol) {
  * @returns {Promise<Response>}
  */
 export async function serveShellDocument({ url, root }) {
-  const { readFile } = await import('node:fs/promises')
+  const { readFile, stat } = await import('node:fs/promises')
   const { extname, resolve, sep } = await import('node:path')
   const parsed = new URL(url)
+
+  // If the renderer directory itself does not exist (e.g. a hand-picked
+  // install layout where `renderer/` was not copied), the route cannot serve
+  // anything; return 503 instead of an unhandled ENOENT crash.
+  try {
+    await stat(root)
+  } catch {
+    return new Response(null, { status: 503, statusText: 'renderer directory missing' })
+  }
+
   /** @type {Readonly<Record<string, string>>} */
   const MIME = {
     '.html': 'text/html; charset=utf-8',

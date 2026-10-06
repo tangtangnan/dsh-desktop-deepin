@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>DeepSeek Harness Desktop</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: #1b1b1f; color: #e8e8ea;
+      font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+    main { width: min(560px, 88vw); padding: 32px; }
+    .brand { letter-spacing: .18em; font-size: 12px; opacity: .55; margin-bottom: 18px; }
+    .stage { display: inline-flex; align-items: center; gap: 10px; opacity: .9; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #4c8dff;
+      animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+    .elapsed { font-size: 12px; opacity: .45; margin-top: 10px; font-variant-numeric: tabular-nums; }
+    .hint { font-size: 13px; opacity: .7; min-height: 1.4em; margin-top: 12px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    button { padding: 7px 14px; border-radius: 7px; border: 1px solid rgba(255,255,255,.18);
+      background: rgba(255,255,255,.08); color: inherit; font: inherit; cursor: pointer; }
+    button:hover { background: rgba(255,255,255,.14); }
+    button.primary { background: #2f6fe4; border-color: #2f6fe4; }
+    button[disabled] { opacity: .5; cursor: default; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">DEEPSEEK HARNESS</div>
+    <div class="stage"><span class="dot"></span><span id="stage-text">正在准备启动…</span></div>
+    <div class="elapsed" id="elapsed"></div>
+    <p class="hint" id="hint">内核尚未就绪，请稍候…</p>
+    <div class="actions">
+      <button class="primary" type="button" id="retry">重试</button>
+      <button type="button" id="quit">退出</button>
+    </div>
+  </main>
+  <script>
+    (function () {
+      var t0 = Date.now()
+      var el = document.getElementById('elapsed')
+      var st = document.getElementById('stage-text')
+      var hint = document.getElementById('hint')
+      var retryBtn = document.getElementById('retry')
+      var quitBtn = document.getElementById('quit')
+
+      function pad(n) { return n < 10 ? '0' + n : '' + n }
+      function elapsed() {
+        if (!el) return
+        var s = Math.floor((Date.now() - t0) / 1000)
+        el.textContent = s < 60 ? ('已等待 ' + s + ' 秒') : ('已等待 ' + Math.floor(s / 60) + ' 分 ' + pad(s % 60) + ' 秒')
+      }
+      function setText(t) { if (st) st.textContent = t }
+
+      // The shell calls `window.__dshStage(stage, retryMs)` to advance this page
+      // through its stages without reloading it. One document lives for the whole
+      // startup, so the elapsed counter never resets.
+      window.__dshStage = function (stage, retryMs) {
+        if (stage === 'preparing') setText('正在准备启动…')
+        else if (stage === 'waiting-for-ready') setText('正在等待内核就绪…')
+        else if (stage === 'retrying') setText('内核退出，' + Math.ceil((retryMs || 0) / 1000) + ' 秒后重试…')
+        else setText('正在启动内核…')
+        elapsed()
+      }
+
+      // The shell also pushes log lines via `window.__dshLog(line, isErr)`;
+      // they appear in the hint area.
+      window.__dshLog = function (line, isErr) {
+        if (!hint) return
+        hint.textContent = String(line)
+        if (isErr) hint.style.color = '#e06c75'
+      }
+
+      elapsed()
+      setInterval(elapsed, 1000)
+
+      retryBtn.addEventListener('click', function () {
+        retryBtn.disabled = true
+        hint.textContent = '正在重试…'
+        var bridge = window.dshShell && window.dshShell.invoke
+        if (bridge) bridge('restart-kernel')
+        else hint.textContent = '重试不可用，请手动重启应用。'
+      })
+      quitBtn.addEventListener('click', function () {
+        var bridge = window.dshShell && window.dshShell.invoke
+        if (bridge) bridge('quit')
+      })
+    })()
+  </script>
+</body>
+</html>

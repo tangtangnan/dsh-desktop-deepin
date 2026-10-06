@@ -74,8 +74,9 @@ test('installShellProtocol calls protocol.handle with a routing handler', async 
   const fn = handlerState.fn
   assert.ok(fn, 'a handler should be registered')
   const response = await fn({ url: 'dsh-app://shell/x.html' })
-  // We did not point rendererRoot at a real dir, so expect a 404, not a crash.
-  assert.equal(response.status, 404)
+  // We did not point rendererRoot at a real dir, so the renderer stat check
+  // 503s before it even tries to read a file.
+  assert.equal(response.status, 503)
 })
 
 test('serveShellDocument serves a static file under root', async () => {
@@ -121,6 +122,14 @@ test('serveShellDocument 404s for a missing file', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('serveShellDocument 503s when the renderer root is missing', async () => {
+  const response = await serveShellDocument({
+    url: 'dsh-app://shell/loading.html',
+    root: '/opt/definitely/not/here',
+  })
+  assert.equal(response.status, 503)
 })
 
 test('forwardToKernel 404s for non-app hostnames', async () => {

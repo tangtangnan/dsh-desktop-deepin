@@ -69,6 +69,15 @@ say "复制壳代码…"
 cp -r "$ROOT/src"          "$APP_DIR/src"
 cp -r "$ROOT/tools"        "$APP_DIR/tools"
 cp -r "$ROOT/assets"       "$APP_DIR/assets"
+# renderer/ is the shell's own static documents (loading/error pages served
+# over the dsh-app://shell/ scheme). It ships with the shell code so the
+# handler in src/main.js can resolve it at runtime.
+[ -d "$ROOT/renderer" ] && {
+  cp -r "$ROOT/renderer" "$APP_DIR/renderer"
+  # The shell's static pages (served over the dsh-app://shell/ scheme) ship with
+  # the shell code and must be world-readable: 0644 like the rest of the payload.
+  find "$APP_DIR/renderer" -type f -exec chmod 0644 {} +
+}
 cp    "$ROOT/config.json"  "$APP_DIR/config.json"
 cp    "$ROOT/start-shell.sh" "$APP_DIR/start-shell.sh"
 cp    "$ROOT/package.json" "$APP_DIR/package.json"
