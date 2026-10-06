@@ -12,11 +12,15 @@ permissions:
 jobs:
   check:
     name: Test and scan
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+    # 只跑 ubuntu：本项目只发 Linux deb（Deepin / UOS），Windows 与 macOS 既不做
+    # 安装包、也不发布任何产物。此前矩阵里的 windows-latest 固定失败 5 项 ——
+    # 断言写的是 POSIX 路径字面量（/home/u/.dsh），而 Windows 的 path.join 产出
+    # 反斜杠（\home\u\.dsh）；macos-latest 虽同为 POSIX 而恰好通过，但同样是在测
+    # 一个不发行的平台，只消耗 CI 时间。
+    #
+    # 与其为一个不存在的使用场景维护跨平台断言，不如与下方 e2e job 保持一致：
+    # 只在产物真正服务的平台上测试。将来若真要支持某平台，届时连断言一起补。
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
