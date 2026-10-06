@@ -47,6 +47,12 @@
       var retryBtn = document.getElementById('retry')
       var quitBtn = document.getElementById('quit')
 
+      // The shell pushes the initial start time via `window.__dshShellInit(startedAt)`;
+      // before that arrives the counter simply counts from page load.
+      window.__dshShellInit = function (startedAt) {
+        if (typeof startedAt === 'number' && startedAt > 0) t0 = startedAt
+      }
+
       function pad(n) { return n < 10 ? '0' + n : '' + n }
       function elapsed() {
         if (!el) return

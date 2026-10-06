@@ -48,11 +48,13 @@
       var hint = document.getElementById('hint')
       var retryBtn = document.getElementById('retry')
 
-      // The shell pushes the error details via `window.__dshShellError(body, logTail)`.
-      window.__dshShellError = function (msg, tail) {
+      // The shell pushes the error details via `window.__dshShellError(body, logTail)`
+      // or via the `shell:shellError` IPC message. Either path ends up here.
+      function applyError(msg, tail) {
         if (msg) body.textContent = String(msg)
         if (tail !== undefined && tail !== null) log.textContent = String(tail)
       }
+      window.__dshShellError = applyError
 
       retryBtn.addEventListener('click', function () {
         retryBtn.disabled = true

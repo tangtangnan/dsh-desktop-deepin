@@ -15,6 +15,10 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, shell } from 'electron'
 import { findFreePort } from './kernel-process.js'
 import { KernelSupervisor } from './kernel-supervisor.js'
+// Deprecated: kept for the rollback path. The scheme URL in `loadingUrl` /
+// `errorUrl` below is now the primary; `loadingPageHtml` / `errorPageHtml`
+// remain wired in `loadShellStaticPage` as a fallback when the scheme is not
+// yet installed (e.g. a hand-picked install layout missing `renderer/`).
 import { errorPageHtml, loadingPageHtml } from './loading-page.js'
 import { getConfig } from './config.js'
 import { buildKernelArgs, buildKernelEnv, isSupportedNodeVersion } from './kernel-runtime.js'
@@ -49,6 +53,13 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
 import { installShellProtocol, registerShellScheme } from './shell-protocol.js'
+
+// Scheme URLs the static loading/error pages are served from.
+// The handler is installed in `whenReady` (before the first window), and the
+// pages are plain files under `renderer/`, so they survive across restarts
+// without re-packaging the shell.
+const LOADING_URL = 'dsh-app://shell/loading.html'
+const ERROR_URL = 'dsh-app://shell/error.html'
 import {
   SECURE_WEB_PREFERENCES,
   classifyWindowOpen,
@@ -292,7 +303,7 @@ async function switchHome(id) {
 
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
       startupBeganAt = Date.now()
-      void mainWindow.loadURL(loadingPageHtml({ stage: 'launching', startedAt: startupBeganAt }))
+      void loadLoadingPage(mainWindow, 'launching', startupBeganAt)
     }
 
     const supervisor = kernel
@@ -1066,7 +1077,7 @@ async function startKernel() {
     }).catch(() => undefined)
 
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      void mainWindow.loadURL(errorPageHtml({ attempts: 0, logTail: tail(process_.logText(), 25) }))
+      void loadErrorPage(mainWindow, '内核启动失败，未能就绪。', tail(process_.logText(), 25))
     }
   })
   // A single unexpected exit is still worth recording, even when a restart
@@ -1249,6 +1260,47 @@ function readWindowState() {
   } catch {
     return null
   }
+}
+
+/**
+ * Loads the static loading page (served over the `dsh-app://` scheme) and
+ * pushes its initial parameters via `executeJavaScript`.
+ *
+ * The page is a plain file under `renderer/` — it does not embed any state,
+ * so the main process has to hand the start timestamp over after load. The
+ * retry loop in `pushStage` already handles the "function not yet defined"
+ * case, so this is a plain `executeJavaScript` call here.
+ *
+ * @param {BrowserWindow} window
+ * @param {string} stage
+ * @param {number} startedAt
+ * @returns {Promise<void>}
+ */
+async function loadLoadingPage(window, stage, startedAt) {
+  await window.loadURL(LOADING_URL)
+  void window.webContents
+    .executeJavaScript(`window.__dshShellInit && window.__dshShellInit(${Number(startedAt)})`, true)
+    .catch(() => { /* page's script not yet running; pushStage will retry */ })
+  pushStage(stage, 0)
+}
+
+/**
+ * Loads the static error page and pushes the error body + log tail.
+ *
+ * @param {BrowserWindow} window
+ * @param {string} body - the human-readable error message
+ * @param {string} logTail - the kernel's last N lines of output
+ * @returns {Promise<void>}
+ */
+async function loadErrorPage(window, body, logTail) {
+  await window.loadURL(ERROR_URL)
+  void window.webContents
+    .executeJavaScript(
+      `(function(){ if (typeof window.__dshShellError !== 'function') return false;
+        window.__dshShellError(${JSON.stringify(body)}, ${JSON.stringify(logTail)}); return true })()`,
+      true,
+    )
+    .catch(() => { /* page's script not yet running; user can reload manually */ })
 }
 
 /**
@@ -1464,7 +1516,7 @@ function createWindow() {
 
   // The loading page is shown immediately; `setKernel` swaps in the kernel
   // once it is ready.
-  void window.loadURL(loadingPageHtml({ stage: 'preparing', startedAt: startupBeganAt }))
+  void loadLoadingPage(window, 'preparing', startupBeganAt)
   return { window, setKernel }
 }
 
@@ -1529,7 +1581,7 @@ async function restartKernel() {
 
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     startupBeganAt = Date.now()
-    void mainWindow.loadURL(loadingPageHtml({ stage: 'launching', startedAt: startupBeganAt }))
+    void loadLoadingPage(mainWindow, 'launching', startupBeganAt)
   }
 
   try {
@@ -1576,11 +1628,10 @@ async function restartKernel() {
     // happened instead of showing an animation that will never end.
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
       const supervisorLog = supervisor.current?.logText?.() ?? ''
-      void mainWindow.loadURL(
-        errorPageHtml({
-          attempts: 0,
-          logTail: tail(`restart failed: ${message}\n\n${supervisorLog}`, 25),
-        }),
+      void loadErrorPage(
+        mainWindow,
+        '内核重启失败。',
+        tail(`restart failed: ${message}\n\n${supervisorLog}`, 25),
       )
     }
   }
