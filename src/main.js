@@ -12,7 +12,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { mkdir, symlink, cp } from 'node:fs/promises'
 import { dirname, basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, shell } from 'electron'
 import { findFreePort } from './kernel-process.js'
 import { KernelSupervisor } from './kernel-supervisor.js'
 import { errorPageHtml, loadingPageHtml } from './loading-page.js'
@@ -48,6 +48,7 @@ import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
+import { installShellProtocol, registerShellScheme } from './shell-protocol.js'
 import {
   SECURE_WEB_PREFERENCES,
   classifyWindowOpen,
@@ -57,6 +58,11 @@ import {
 
 const HOST = '127.0.0.1'
 const here = dirname(fileURLToPath(import.meta.url))
+
+// Register the private scheme as privileged *before* any window is created —
+// `registerSchemesAsPrivileged` only takes effect pre-window. The handler
+// itself is installed later, once we know the kernel's origin and token.
+registerShellScheme(protocol)
 
 // Ports are always chosen by the OS.
 //
@@ -1634,6 +1640,24 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     startupBeganAt = Date.now()
     try {
+      // Install the protocol handler before the first window. The renderer can
+      // fetch `dsh-app://shell/...` for shell-owned static documents and
+      // `dsh-app://app/...` to reach the kernel's authenticated origin. The
+      // handler reads live state through the closure, so it picks up the
+      // endpoint the moment `setKernel` records it.
+      /** @type {{ kernelOrigin: string | null }} */
+      const shellProtoState = { kernelOrigin: null }
+      installShellProtocol(protocol, {
+        rendererRoot: join(here, '..', 'renderer'),
+        kernelOriginOf: () => shellProtoState.kernelOrigin,
+        tokenOf: () => {
+          const proc = kernel?.current
+          return proc?.webToken?.() ?? null
+        },
+      })
+      /** @param {string | null} origin */
+      const setShellKernelOrigin = (origin) => { shellProtoState.kernelOrigin = origin }
+
       // Show the window first, then start the kernel. The kernel takes seconds
       // to become ready, and making the user stare at nothing for that whole
       // time is a worse experience than a visible loading page that reports
@@ -1648,6 +1672,9 @@ if (!app.requestSingleInstanceLock()) {
       // page's stage text as the kernel moves through launch → waiting.
       const { origin, token } = await startKernel()
       await window_.setKernel(origin, token)
+      // Publish the kernel endpoint to the protocol handler so the
+      // `dsh-app://app/` route can forward once the kernel is up.
+      setShellKernelOrigin(origin)
 
       // The IPC channel from the locked-down preload. The renderer can only
       // call `shell.notify`; everything else in the kernel web UI has no
