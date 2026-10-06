@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+（暂无）
+
+## [0.2.12] — 2026-10-06
+
 ### 新增
 
 - **多个内核 Home 并可切换**。此前一个壳只认一个 `DSH_HOME`：它在进程启动时被
