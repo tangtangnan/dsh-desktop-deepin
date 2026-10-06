@@ -302,6 +302,12 @@ mkdir -p "$USERDATA"
 
 # DSH_HOME 解析：~ 必须展开（Node 的 path.isAbsolute('~/.dsh') 为 false，
 # 不展开会被当相对路径拼到 userData 下，生成名为 ~ 的空目录）。
+#
+# 必须 export：本脚本自身虽然不再直接用它起内核（内核的 env 由 Electron 侧
+# 的 buildKernelEnv 拼），但被本脚本调用的 install-plugins.sh 是通过
+# `dsh plugin --profile web add` 装插件的，而 dsh 认的就是环境变量 DSH_HOME。
+# 不导出 → 插件一律装进默认家 ~/.dsh，与本壳实际使用的家错位：把家换到别处后，
+# 插件仍然装去了旧家，表现为「这个家一个插件都没有」。之前就是漏了这个 export。
 HOME_SUB="$(config_value homeSubdir || echo kernel-home)"
 case "$HOME_SUB" in
   '~')    DSH_HOME="$HOME" ;;
@@ -309,6 +315,7 @@ case "$HOME_SUB" in
   /*)     DSH_HOME="$HOME_SUB" ;;
   *)      DSH_HOME="$USERDATA/$HOME_SUB" ;;
 esac
+export DSH_HOME
 
 say ""
 say "▶ 启动 DSH 社区壳（系统内核模式）"

@@ -258,6 +258,8 @@ bash /opt/deepseek-harness-desktop/tools/install-plugins.sh force    # 全部重
 | 系统内核模式 | `src/main.js` `resolveKernelPaths` | 设 `DSH_KERNEL_BIN` 即可驱动系统已装的 `dsh`，用真 Node 跑 |
 | 固定端口 | `src/main.js` `preferredPort` | 默认 `19387`（官方同款）；被占用则自动退回随机端口 |
 | 崩溃报告 | `src/diagnostics.js` | 写 `userData/logs/crash-<UTC>-<来源>.log`，保留最新 10 份，输出限 64 KiB |
+| 多个内核 Home | `src/dsh-home-manager.js` | 可登记多个 `DSH_HOME` 并在托盘切换；注册表存 `userData/dsh-homes.json`，刻意放在所有 Home 之外 |
+| 命令行指定 Home | `src/dsh-home-manager.js` | `--dsh-home=<路径>` 直接用某个目录启动，优先级高于一切 remembered 选择；适合做多个快捷方式 |
 
 ### 桌面集成
 
@@ -265,7 +267,7 @@ bash /opt/deepseek-harness-desktop/tools/install-plugins.sh force    # 全部重
 |---|---|---|
 | 应用菜单 | `src/app-menu.js` | 应用/文件/编辑/视图/窗口 五组；首项「关于」开原生面板 |
 | DevTools 快捷键 | `src/app-menu.js` | F12 与 Ctrl+Shift+I，注册为隐藏菜单项，打包版同样有效 |
-| 系统托盘 | `src/tray.js` | 显示/隐藏/重启内核/检查更新/安全模式/开机自启/退出，带实时状态行 |
+| 系统托盘 | `src/tray.js` | 显示/隐藏/重启内核/**切换 Home**/检查更新/安全模式/开机自启/退出，带实时状态行 |
 | 关闭即隐藏 | `src/tray.js` `src/main.js` | 关窗只隐藏，内核与任务继续跑；退出走托盘或菜单 |
 | 退出确认 | `src/exit-guard.js` | 退出前弹确认框，策略见 `kernel.exitPolicy` |
 | 窗口几何记忆 | `src/window-state.js` | 记住尺寸位置；显示器拔掉后不会把窗口丢到屏幕外 |
@@ -302,6 +304,83 @@ dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
   永远 401，最后报「内核未响应」而真正的内核活得好好的）。改成系统分配后从根上消除了撞车。
 - **系统内核模式**：`launcher.systemDsh` 指向本机 `dsh`，壳用它作为内核，不下载 bundled 版本。
 - **`~` 展开**：`kernel.homeSubdir` 支持 `~/.dsh` 写法（Node 不认 `~` 是绝对路径，必须显式展开）。
+
+### 多个内核 Home（可选切换）
+
+一个 `DSH_HOME` 就是一套完整身份：会话、设置、凭据、插件、记忆全在里面。
+壳可以登记若干个这样的目录，**用哪个加载哪个**，不用再改配置重启。
+
+适合这几种情况：工作与个人分开；临时开一个干净环境试插件，试完删掉不影响主力；
+给不同用途配不同插件组合。
+
+#### 怎么切换
+
+**托盘菜单 →「内核 Home」→ 点选目标**，前面有 `✓` 的是当前生效的那一家。
+
+```
+托盘右键
+└─ 内核 Home
+   ├─ ✓ 默认
+   ├─   工作
+   ├─   ──────────
+   ├─   添加已有 Home…
+   └─   在文件管理器中打开当前 Home
+```
+
+切换时会**重启内核**（不是重启整个壳），所以要等一会儿——界面回到 loading 页，
+日志照常可见。实测启动耗时在 **45~120 秒**之间波动（插件与 MCP 服务器串行初始化），
+这是内核自己的启动代价，不是菜单卡住。选过之后会被记住，下次启动直接进那一家。
+
+#### 怎么添加
+
+托盘 →「内核 Home → 添加已有 Home…」，选一个目录即可。随后会问一句：
+
+- **复制** —— 把当前 Home 的 `profiles/web`（含全部插件）拷进新家。新家立刻具备
+  相同的插件，省去重新下载安装。适合"想要一个和现在一样的"。
+- **不用，创建空 Home** —— 得到干净内核，只有 `dsh-base` 与 `dsh-web-app`
+  两个内置 bundle，一个第三方插件都没有。适合"想要一个纯净环境"。
+
+> 目标目录里已经有 `profiles/` 时会**跳过复制**（不合并）。合并两份 manifest
+> 会静默产出一个两边都没写过的插件列表，那比不做更糟。
+
+#### 命令行直接指定
+
+```sh
+./start-shell.sh --dsh-home=/home/你/dsh-work
+# 或等号形式
+--dsh-home /home/你/dsh-work
+```
+
+它的优先级最高：高于环境变量 `DSH_HOME`，也高于上次记住的选择。想做几个不同用途的
+快捷方式（`.desktop`），各写一行 `--dsh-home=…` 就行。
+
+完整优先级，从高到低：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | `--dsh-home` 命令行 | 本次启动专用，不改变记住的选择 |
+| 2 | 环境变量 `DSH_HOME` | 终端里 `DSH_HOME=… ./start-shell.sh` 同样有效 |
+| 3 | 上次记住的选择 | 托盘切换后写入注册表，下次自动沿用 |
+| 4 | `config.json` 的 `homeSubdir` | 兜底，即「默认那一家」 |
+
+#### ⚠️ 同时只让一家在线
+
+复制出来的新家**沿用原家的凭据**。两个 Home 同时在线时，同一账号的常连接型插件
+（例如 IM）会互相争抢长连接，**结果是入站消息丢失**——这正是各家必须能分开的理由，
+也是分开后要留神的地方。
+
+需要真的同时在线，请到新家里改掉对应插件的凭据。或者干脆别同时开两家。
+
+#### 注册表在哪
+
+`userData/dsh-homes.json`（通常是 `~/.local/share/dsh-desktop/data-shell/`）。
+刻意放在**所有 Home 之外**：否则删掉某一个 Home 时，会把整个清单也一起带走。
+
+- 「默认」那一家**不可删除**——它的路径由 `config.json` 的 `homeSubdir` 决定，
+  删了就没有兜底可用。
+- 菜单里的删除只对清单生效，**绝不删你的目录**。删一个装满东西的家这种事，
+  不该由"从列表里移除一行"触发。要清数据请自己去文件管理器删。
+- 两份条目指向同一目录时，后一条会被标注「与 xxx 同路径」，两条都保留。
 
 ### 安全模式
 
@@ -360,7 +439,7 @@ dsh: skipping profile bundle "xxx"    ← 哪个插件没加载，看得见
 
 | 键 | 取值 | 说明 |
 |---|---|---|
-| `homeSubdir` | 路径 | `DSH_HOME` 的位置。**支持 `~` 展开**（`~/.dsh` → `/home/你/.dsh`）；相对路径则拼在 `userDataDir` 下 |
+| `homeSubdir` | 路径 | `DSH_HOME` 的位置。**支持 `~` 展开**（`~/.dsh` → `/home/你/.dsh`）；相对路径则拼在 `userDataDir` 下。**它决定的是「默认那一家」**——此外还能登记更多 Home 并随时切换，见《[多个内核 Home](#多个内核-home可选切换)》 |
 | `profile` | `web` 等 | 启动 profile |
 | `noOpen` | `true`/`false` | `true` 表示不让 dsh 自己开浏览器，由壳加载页面 |
 | `directoryPicker` | `auto`/`browse`/`native` | `auto` 时：Linux 上有 zenity 或 kdialog 就用原生对话框，两者都没有则自动降级为浏览模式 |

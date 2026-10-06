@@ -16,7 +16,7 @@
   "kernel": {
     "_comment": "内核段：决定 dsh 内核怎么起、DSH_HOME 落在哪。",
     "homeSubdir": "~/.dsh",
-    "_comment_homeSubdir": "DSH_HOME 的位置。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用（如系统默认 /home/wangke/.dsh）。注意：绝对路径意味着本壳与任何使用同一目录的 dsh 实例共用内核 home——同一台机器若还有另一个 dsh web/桌面端在跑，两条飞书 bot 长连接会互相抢占，入站消息会丢。只在本机只有这一个 dsh 时这么设。",
+    "_comment_homeSubdir": "DSH_HOME 的位置，也就是「默认那一家」。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用。它还不是全部：壳还能登记更多 Home 并在托盘里切换（清单在 userData/dsh-homes.json），启动时的优先级是 命令行 --dsh-home > 环境变量 DSH_HOME > 上次记住的选择 > 这里的值。注意：指向一个正在被别的 dsh 实例使用的目录，意味着两边共用同一份内核 home——两条飞书 bot 长连接会互相抢占，入站消息会丢。",
     "profile": "web",
     "_comment_profile": "dsh 启动 profile，默认 web（带 Web UI 的桌面模式）。",
     "noOpen": true,
@@ -70,5 +70,5 @@
     "autoDownload": false,
     "_comment_autoDownload": "检测到更新是否自动下载。false 表示只提示、不自动拉。"
   },
-  "_comment_homeSubdir": "DSH_HOME 的位置。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用（如系统默认 /home/wangke/.dsh）。注意：绝对路径意味着本壳与任何使用同一目录的 dsh 实例共用内核 home——同一台机器若还有另一个 dsh web/桌面端在跑，两条飞书 bot 长连接会互相抢占，入站消息会丢。只在本机只有这一个 dsh 时这么设。"
+  "_comment_homeSubdir": "DSH_HOME 的位置，也就是「默认那一家」。相对路径会拼在 launcher.userDataDir 之下；绝对路径则直接使用。壳还能登记更多 Home 并在托盘里切换（清单在 userData/dsh-homes.json），启动优先级是 命令行 --dsh-home > 环境变量 DSH_HOME > 上次记住的选择 > 这里的值。详见 README 的《多个内核 Home（可选切换）》。"
 }

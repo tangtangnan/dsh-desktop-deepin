@@ -105,6 +105,25 @@ export class ShellTray {
   #shortcutRegistered = false
 
   /**
+   * The kernel homes offered in the menu, and the one currently in use.
+   *
+   * Shown as a radio group rather than a plain list: exactly one home is in use
+   * at any moment, and the menu should say which rather than making the user
+   * infer it from absence. Entries arrive already shaped for display by
+   * `describeHomes` — including the `duplicateOf` flag, which marks two entries
+   * pointing at one directory instead of silently dropping one.
+   *
+   * @type {Array<{id: string, name: string, path: string, active: boolean, builtin: boolean, duplicateOf: string | null}>}
+   */
+  #homes = []
+  /** @type {string | null} */
+  #activeHomeId = null
+  /** @type {(id: string) => void} */
+  #onSelectHome = () => {}
+  /** @type {() => void} */
+  #onAddHome = () => {}
+
+  /**
    * @param {object} options
    * @param {string} options.iconPath - a tray-sized icon
    * @param {import('electron').BrowserWindow} options.window
@@ -118,9 +137,13 @@ export class ShellTray {
    * @param {boolean} [options.safeMode] - whether Safe Mode is on
    * @param {boolean} [options.launchAtLogin] - whether autostart is on
    * @param {string | null} [options.balance] - balance string to show, or null
+   * @param {Array<{id: string, name: string, path: string, active: boolean, builtin: boolean, duplicateOf: string | null}>} [options.homes]
+   *   - the kernel homes to offer
+   * @param {(id: string) => void} [options.onSelectHome] - switch to that home
+   * @param {() => void} [options.onAddHome] - register another home directory
    * @returns {void}
    */
-  attach({ iconPath, window, onShow, onQuit, onState, onRestart, onCheckUpdates, onToggleLaunchAtLogin, onToggleSafeMode, launchAtLogin = false, safeMode = false, balance = null }) {
+  attach({ iconPath, window, onShow, onQuit, onState, onRestart, onCheckUpdates, onToggleLaunchAtLogin, onToggleSafeMode, launchAtLogin = false, safeMode = false, balance = null, homes = [], onSelectHome, onAddHome }) {
     if (this.#tray !== null) return
     if (!existsSync(iconPath)) {
       throw new Error(`tray icon missing: ${iconPath}`)
@@ -135,6 +158,9 @@ export class ShellTray {
     this.#safeMode = safeMode
     if (typeof onToggleSafeMode === 'function') this.#onToggleSafeMode = onToggleSafeMode
     this.#balance = balance
+    this.#setHomes(homes)
+    if (typeof onSelectHome === 'function') this.#onSelectHome = onSelectHome
+    if (typeof onAddHome === 'function') this.#onAddHome = onAddHome
     if (typeof onState === 'function') onState(this.#kernelState ?? { phase: 'starting', stage: 'launching' })
 
     const { Tray, nativeImage } = loadElectron()
@@ -303,6 +329,99 @@ export class ShellTray {
     this.#tray.setContextMenu(this.#buildMenu())
   }
 
+  /**
+   * Records the offered homes and which one is marked active.
+   *
+   * @param {Array<{id: string, name: string, path: string, active: boolean, builtin: boolean, duplicateOf: string | null}>} homes
+   * @returns {void}
+   */
+  #setHomes(homes) {
+    this.#homes = Array.isArray(homes) ? homes : []
+    this.#activeHomeId = this.#homes.find((home) => home.active)?.id ?? null
+  }
+
+  /**
+   * Replaces the list of kernel homes shown in the menu.
+   *
+   * @param {Array<{id: string, name: string, path: string, active: boolean, builtin: boolean, duplicateOf: string | null}>} homes
+   * @returns {void}
+   */
+  setHomes(homes) {
+    this.#setHomes(homes)
+    this.#refreshMenu()
+  }
+
+  /**
+   * Marks one home as current. Called once a switch has taken effect, so the
+   * check mark follows reality rather than the user's click.
+   *
+   * @param {string} id
+   * @returns {void}
+   */
+  setActiveHome(id) {
+    this.#activeHomeId = id
+    this.#homes = this.#homes.map((home) => ({ ...home, active: home.id === id }))
+    this.#refreshMenu()
+  }
+
+  /**
+   * The "Kernel home" submenu, or null when there is nothing worth showing.
+   *
+   * A single home means there is nothing to switch to, so the entry stays
+   * hidden rather than offering a menu whose only row says "the one you are
+   * using" — that is noise dressed up as a feature.
+   *
+   * @returns {Electron.MenuItemConstructorOptions | null}
+   */
+  #buildHomesMenu() {
+    if (this.#homes.length === 0) return null
+
+    const rows = this.#homes.map((home) => ({
+      label: home.duplicateOf !== null ? `${home.name}（与 ${home.duplicateOf} 同路径）` : home.name,
+      type: /** @type {const} */ ('radio'),
+      checked: home.id === this.#activeHomeId,
+      toolTip: home.path,
+      click: () => this.#onSelectHome(home.id),
+    }))
+
+    return {
+      label: '内核 Home',
+      submenu: [
+        ...rows,
+        { type: /** @type {const} */ ('separator') },
+        {
+          label: '添加已有 Home…',
+          click: () => this.#onAddHome(),
+        },
+        {
+          label: '在文件管理器中打开当前 Home',
+          click: () => this.#openHomeDirectory(),
+        },
+      ],
+    }
+  }
+
+  /**
+   * Opens the home currently in use in the OS file manager.
+   *
+   * Best-effort: `openPath` reports failure asynchronously and there is nothing
+   * useful to do about it here beyond logging. Pointing the user at the
+   * directory is worth offering because "which home am I in" is a question
+   * better answered by seeing the files than by reading a menu.
+   *
+   * @returns {void}
+   */
+  #openHomeDirectory() {
+    const current = this.#homes.find((home) => home.id === this.#activeHomeId)
+    if (current === undefined) return
+    try {
+      const { shell } = loadElectron()
+      void shell.openPath(current.path)
+    } catch (error) {
+      console.warn(`could not open ${current.path}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   /** @returns {string} the status line for the current kernel state */
   #statusLabel() {
     const state = this.#kernelState
@@ -325,6 +444,7 @@ export class ShellTray {
     const { Menu } = loadElectron()
     const canRestart = this.#kernelState?.phase === 'crashed' || this.#kernelState?.phase === 'ready'
 
+    /** @type {Electron.MenuItemConstructorOptions[]} */
     const items = [
       {
         label: this.#isWindowVisible ? '隐藏窗口' : '显示窗口',
@@ -359,6 +479,14 @@ export class ShellTray {
         click: () => this.#onRestart(),
       },
     ]
+
+    // The home switcher sits beside "restart kernel" rather than under a settings
+    // submenu: it is a routine action, and burying it would make the shell look
+    // like it still only supports one home.
+    const homesMenu = this.#buildHomesMenu()
+    if (homesMenu !== null) {
+      items.push({ type: 'separator' }, homesMenu)
+    }
 
     if (this.#balance !== null) {
       items.push({

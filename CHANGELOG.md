@@ -6,7 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-（暂无）
+### 新增
+
+- **多个内核 Home 并可切换**。此前一个壳只认一个 `DSH_HOME`：它在进程启动时被
+  解析成常量（`src/main.js`），换家意味着改配置重启整个壳，而 `requestSingleInstanceLock()`
+  又使并行开第二个壳并不可能。现在新增 `src/dsh-home-manager.js`，把家变成可选状态：
+  托盘菜单「内核 Home」列出所有已登记的家，点选即切换——实现上是「改当前路径 + 重启
+  内核」，不重启整个壳。启动时的选取优先级为
+  `--dsh-home` 命令行 > 环境变量 `DSH_HOME` > 上次记住的选择 > `config.json` 的 `homeSubdir`。
+- **添加 Home 时可选「从当前家复制」**。dsh 会把空目录初始化成干净 profile，但那样
+  一个第三方插件都没有。菜单提供复制 `profiles/web` 的选项，新家随即具备相同插件，
+  免去重新下载安装；目标已有 `profiles/` 时跳过而非合并——合并两份 manifest 会静默
+  产出一个两边都没写过的插件列表。
+- **命令行 `--dsh-home=<路径>`**。用于给不同的家各做一个快捷方式；优先级最高，
+  且不会覆盖记住的选择。
+
+### 修复
+
+- **`start-shell.sh` 解析出 `DSH_HOME` 却从未 `export`**。该值此前只用于启动时打印
+  那一行 banner，因此被同一脚本调用的 `install-plugins.sh` 始终在默认家 `~/.dsh`
+  下安装插件——一旦把家换到别处，插件会装进不在使用的那个目录，表现为「这个家一个
+  插件都没有」。现已导出，插件装进当前实际生效的家。这是多 Home 功能成立的前提。
+
+### 变更
+
+- 家的清单存在 `userData/dsh-homes.json`，刻意放在所有 Home 之外，使删除某个 Home
+  不会连带丢掉整个清单；默认家（由 `homeSubdir` 决定）不可删除，删除操作只移除清单
+  条目、不删除用户的目录。
 
 ## [0.2.11] — 2026-10-02
 

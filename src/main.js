@@ -9,9 +9,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { mkdir, symlink } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, isAbsolute, join } from 'node:path'
+import { mkdir, symlink, cp } from 'node:fs/promises'
+import { dirname, basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron'
 import { findFreePort } from './kernel-process.js'
@@ -33,6 +32,18 @@ import { resolveBindings, shortcutDeliveryMode, validateBindings } from './short
 import { exitConfirmCopy, shouldConfirmExit } from './exit-guard.js'
 import { isDesktopAction, toDesktopState } from './desktop-commands.js'
 import { hasSafeModeTargets, nextBackupPath, safeModeTargets, toDisablePatch } from './safe-mode.js'
+import {
+  DEFAULT_HOME_ID,
+  chooseHome,
+  describeHomes,
+  normalizeRegistry,
+  readCliHome,
+  registryPath,
+  removeHome,
+  resolveSubdir,
+  setActiveHome,
+  upsertHome,
+} from './dsh-home-manager.js'
 import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
@@ -160,6 +171,300 @@ let safeMode = false
 let familyMarker = ''
 /** @type {number | null} */
 let currentKernelPid = null
+
+/**
+ * The kernel home currently in use, and why it was chosen.
+ *
+ * `dshHome` is mutable, unlike every previous version of this shell: switching
+ * homes means pointing this variable somewhere else and restarting the kernel,
+ * which is far cheaper than restarting the whole application. It is read fresh
+ * on every launch attempt by the supervisor's `launchSpec`, so a switch takes
+ * effect at the next kernel start without any further plumbing.
+ *
+ * The `source` records which rule picked it — command line, environment,
+ * registry, or config default — purely so the startup log can say why this
+ * home rather than another one. Nothing depends on it.
+ *
+ * @type {string}
+ */
+let dshHome = ''
+/** @type {string} */
+let dshHomeSource = 'default'
+/**
+ * The registry of known homes, loaded once per launch from `userData`. Its own
+ * file lives outside every `DSH_HOME` it lists, so the list survives a home
+ * being deleted.
+ *
+ * @type {{version: number, activeId: string, homes: Array<object>}}
+ */
+let homeRegistry = normalizeRegistry(null, '')
+
+/**
+ * Loads the registry of kernel homes from `userData`.
+ *
+ * A missing or unparseable file is not an error: the fallback shape is exactly
+ * the state of a fresh install — one home, derived from `config.json` — so a
+ * broken registry costs the user their list of extra homes and nothing else. The
+ * shell must never fail to start because a file it wrote got damaged.
+ *
+ * @param {string} userData - `app.getPath('userData')`
+ * @param {string} defaultPath - where the built-in home points this launch
+ * @returns {Promise<{version: number, activeId: string, homes: Array<object>}>}
+ */
+async function loadHomeRegistry(userData, defaultPath) {
+  const path = registryPath(userData)
+  let raw = null
+  try {
+    raw = JSON.parse(await readFile(path, 'utf8'))
+  } catch {
+    // Absent on first launch, and unreadable if something interrupted a write.
+    // Either way the defaults apply.
+  }
+  return normalizeRegistry(raw, defaultPath)
+}
+
+/**
+ * Persists the registry, atomically and under the same lock every other config
+ * write uses.
+ *
+ * @returns {Promise<void>}
+ */
+async function saveHomeRegistry() {
+  const path = registryPath(app.getPath('userData'))
+  await writeConfigFile(path, `${JSON.stringify(homeRegistry, null, 2)}\n`)
+}
+
+/**
+ * Switches the shell to a different kernel home.
+ *
+ * The switch itself is small — repoint `dshHome` and restart the supervisor —
+ * but the restart is *not* instant: the kernel is tearing down and re-running
+ * every plugin and MCP server it owns, which takes tens of seconds on a real
+ * machine. So the loading page goes up before anything else happens, and the
+ * remembered choice is written before the restart starts rather than after it
+ * succeeds: if the switch fails, the user should still find their choice in
+ * place next launch, because a failed restart leaves the *new* home selected and
+ * the old one unreachable — arguably worse than failing outright.
+ *
+ * A second concurrent switch is refused. There is one supervisor and one window;
+ * two interleaved switches would leave the kernel running against whichever home
+ * lost the race, with no record of which one that was.
+ *
+ * @param {string} id - registry id of the home to switch to
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+/** @type {Promise<void> | null} */
+let homeSwitchInProgress = null
+
+/**
+ * @param {string} id - registry id of the home to switch to
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+async function switchHome(id) {
+  if (homeSwitchInProgress !== null) {
+    return { ok: false, error: '另一个切换正在进行中' }
+  }
+  const target = homeRegistry.homes.find((entry) => /** @type {any} */ (entry).id === id)
+  if (target === undefined) {
+    return { ok: false, error: `未知的 Home：${id}` }
+  }
+  const nextPath = /** @type {any} */ (target).path
+
+  const run = (async () => {
+    // Written before the restart rather than after: see the note above.
+    homeRegistry = setActiveHome(homeRegistry, id)
+    await saveHomeRegistry()
+    dshHome = nextPath
+    dshHomeSource = 'switch'
+    console.log(`switching kernel home to ${dshHome} (${id})`)
+
+    try {
+      await mkdir(dshHome, { recursive: true })
+    } catch (error) {
+      console.warn(`could not create ${dshHome}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    if (mainWindow !== null && !mainWindow.isDestroyed()) {
+      startupBeganAt = Date.now()
+      void mainWindow.loadURL(loadingPageHtml({ stage: 'launching', startedAt: startupBeganAt }))
+    }
+
+    const supervisor = kernel
+    if (supervisor === null) {
+      // No kernel yet means startup has not finished; the value above is
+      // already correct for when it does.
+      return
+    }
+    currentKernelPid = null
+    await sweepOrphans('home-switch')
+    // `restart()` on the supervisor already replaces the running kernel with a
+    // fresh launch using whatever `dshHome` is current — no separate start step,
+    // and no reassigning `kernel`, which stays the supervisor throughout (the
+    // mistake an earlier version of restartKernel made).
+    await supervisor.restart()
+    tray?.setActiveHome?.(id)
+  })()
+
+  homeSwitchInProgress = run
+  try {
+    await run
+    return { ok: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`switching home failed: ${message}`)
+    return { ok: false, error: message }
+  } finally {
+    homeSwitchInProgress = null
+  }
+}
+
+/**
+ * Adds a home to the registry, or switches to it if it is already listed.
+ *
+ * Registering does not switch immediately — it only makes the home available.
+ * Registering and switching are deliberately separate because switching restarts
+ * the kernel, and there is no reason to pay that cost to add an entry nobody
+ * asked to use yet.
+ *
+ * @param {{id: string, name?: string, path: string}} entry
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+async function addHome(entry) {
+  try {
+    homeRegistry = upsertHome(homeRegistry, entry)
+    await saveHomeRegistry()
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Registers an existing directory as a kernel home, picked from a file dialog.
+ *
+ * Nothing is switched to automatically: adding an entry costs nothing, while
+ * switching restarts the kernel, so the two are kept separate and the user gets
+ * to choose from the menu afterwards.
+ *
+ * @returns {Promise<void>}
+ */
+async function addHomeFromPicker() {
+  const target = mainWindow
+  if (target === null || target.isDestroyed()) return
+
+  const result = await dialog.showOpenDialog(target, {
+    title: '选择用作内核 Home 的目录',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (result.canceled) return
+  const directory = result.filePaths[0]
+  if (typeof directory !== 'string' || directory === '') return
+
+  const id = await uniqueHomeId(directory)
+  const name = basename(directory) || 'Home'
+  const outcome = await addHome({ id, name, path: directory })
+  if (!outcome.ok) {
+    tray?.notify('添加 Home 失败', outcome.error ?? '原因未知')
+    return
+  }
+
+  tray?.setHomes(describeHomes(homeRegistry))
+  tray?.notify('已添加 Home', `${name} —— 在菜单里切换到它即可启用`)
+
+  // A directory nobody has used as a home yet is offered to be seeded from the
+  // current one, which avoids waiting through a full plugin reinstall for a
+  // profile that is meant to look like this one anyway.
+  const seeded = await offerHomeSeeding(directory, name)
+  if (!seeded.ok && seeded.error !== undefined) {
+    console.warn(`copying the current home into ${directory} failed: ${seeded.error}`)
+  }
+}
+
+/**
+ * Seeds a new home by copying the profile directory out of the one in use.
+ *
+ * The kernel initialises an empty home on first use, but the result has no third
+ * party plugins — it takes a fresh install and a network round trip to get back
+ * to the set this user already runs. Copying `profiles/<name>` instead carries
+ * everything across, and the copy is skipped rather than merged when the target
+ * already organises itself, because merging two profile manifests silently
+ * produces a bundle list neither author wrote.
+ *
+ * @param {string} directory - the new home
+ * @param {string} name - display name, for the confirmation dialog
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+async function offerHomeSeeding(directory, name) {
+  const profile = getConfig().kernel.profile || 'web'
+  const source = join(dshHome, 'profiles', profile)
+  const destination = join(directory, 'profiles', profile)
+
+  if (!existsSync(source) || existsSync(destination)) return { ok: false }
+
+  const answer = await dialog.showMessageBox(
+    /** @type {Electron.BrowserWindow} */ (mainWindow),
+    {
+      type: 'question',
+      buttons: ['复制', '不用，创建空 Home'],
+      defaultId: 0,
+      cancelId: 1,
+      message: `是否把当前 Home 的配置与插件复制进「${name}」？`,
+      detail:
+        `源：${source}\n目标：${destination}\n\n` +
+        '复制后新 Home 立即具备与当前 Home 相同的插件，省去重新下载安装。' +
+        '若两个 Home 随后都在线，其中同一账号的常连接型插件（如 IM）可能互相争抢，' +
+        '届时请只保留一个在线，或在新 Home 里调整对应凭据。',
+    },
+  )
+  if (answer.response !== 0) return { ok: false }
+
+  try {
+    await cp(source, destination, { recursive: true })
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Derives a registry id from a directory path.
+ *
+ * The base name is the obvious id and is what the user recognises, so it is used
+ * as-is when free, and suffixed when taken — generating something
+ * unrecognisable to dodge a collision would make the menu harder to read for no
+ * benefit.
+ *
+ * @param {string} directory
+ * @returns {Promise<string>}
+ */
+async function uniqueHomeId(directory) {
+  const base = basename(directory).replace(/[^A-Za-z0-9._-]/g, '') || 'home'
+  const taken = new Set(homeRegistry.homes.map((entry) => /** @type {any} */ (entry).id))
+  if (!taken.has(base)) return base
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const candidate = `${base}-${suffix}`
+    if (!taken.has(candidate)) return candidate
+  }
+  return `${base}-${Date.now()}`
+}
+
+/**
+ * Forgets a home. The directory itself is left alone — deleting a user's kernel
+ * profile out from under them because they removed an entry from a list is not
+ * a thing this shell is willing to do. The built-in home cannot be removed.
+ *
+ * @param {string} id
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+async function forgetHome(id) {
+  const target = homeRegistry.homes.find((entry) => /** @type {any} */ (entry).id === id)
+  if (target === undefined) return { ok: false, error: `未知的 Home：${id}` }
+  const next = removeHome(homeRegistry, id)
+  if (next === homeRegistry) return { ok: false, error: '默认 Home 不可删除' }
+  homeRegistry = next
+  await saveHomeRegistry()
+  return { ok: true }
+}
 
 /**
  * Best-effort sweep of the process trees a dead kernel left behind.
@@ -605,26 +910,34 @@ async function startKernel() {
     }
   }
 
-  // DSH_HOME is where the kernel keeps its profile. By default it lives under the
-  // shell's own userData so the kernel profile stays private to this shell (and
-  // never shares a home with a manually-run `dsh`, which would let two web
-  // instances fight over the same Feishu bot long-connection). If you point
-  // `kernel.homeSubdir` at an absolute path, that exact path is used instead —
-  // e.g. the system default "/home/wangke/.dsh". An absolute value means the
-  // shell shares the kernel home with anything else using that directory.
+  // DSH_HOME is where the kernel keeps its profile. There can now be more than
+  // one: the registry lists the homes this shell knows about, and which one is
+  // in use is decided here once, then switched at runtime by `switchHome()`.
+  //
+  // The resolution order is "most explicit first": a `--dsh-home` flag beats the
+  // environment, which beats the remembered choice, which beats the plain
+  // `homeSubdir` default. See {@link module:dsh-home-manager} for the reasoning.
+  //
+  // Anything still written as `~` or relative goes through the same expansion as
+  // before — `~/.dsh` is not an absolute path as far as Node is concerned, and
+  // treating it as one relative to `userData` used to produce a literal
+  // directory named `~`, against which the kernel then started with an empty
+  // home and appeared to ignore every plugin the user had installed.
   const homeSubdir = getConfig().kernel.homeSubdir
-  // `~` is not an absolute path as far as Node is concerned, but every user
-  // writes it that way. Without this expansion `~/.dsh` was treated as a
-  // relative path and joined onto userData, producing a literal directory
-  // named `~` inside the shell's data folder — the kernel then started against
-  // an empty home instead of the user's real one, which is why it appeared to
-  // ignore their plugins entirely.
-  const expanded = homeSubdir === '~'
-    ? homedir()
-    : homeSubdir.startsWith('~/')
-      ? join(homedir(), homeSubdir.slice(2))
-      : homeSubdir
-  const dshHome = isAbsolute(expanded) ? expanded : join(app.getPath('userData'), expanded)
+  const userData = app.getPath('userData')
+  const defaultPath = resolveSubdir({ homeSubdir, userData })
+  homeRegistry = await loadHomeRegistry(userData, defaultPath)
+
+  const chosen = chooseHome({
+    homes: homeRegistry.homes,
+    activeId: homeRegistry.activeId,
+    defaultPath,
+    cliValue: readCliHome(process.argv),
+    envValue: process.env.DSH_HOME,
+  })
+  dshHome = chosen.path
+  dshHomeSource = chosen.source
+  console.log(`using kernel home ${dshHome} (selected by ${dshHomeSource})`)
   await mkdir(dshHome, { recursive: true })
 
   // Shipped plugins must be registered in the profile before the kernel starts, so
@@ -697,6 +1010,10 @@ async function startKernel() {
     /** @returns {Promise<{nodePath: string, args: string[], env: Record<string,string>, cwd: string}>} */
     launchSpec: async () => {
       const port = await preferredPort(HOST)
+      // Read `dshHome` per launch rather than capturing it once: switching homes
+      // is implemented as "change the variable, restart the kernel", and every
+      // attempt — including the retries the supervisor makes on its own — has
+      // to use whichever home is current at that moment.
       const kernelEnv = buildKernelEnv({ parentEnv: process.env, dshHome, runElectronAsNode })
       return {
         nodePath,
@@ -1389,6 +1706,21 @@ if (!app.requestSingleInstanceLock()) {
         onToggleSafeMode: () => void toggleSafeMode(),
         safeMode,
         launchAtLogin: app.getLoginItemSettings().openAtLogin,
+        homes: describeHomes(homeRegistry),
+        onSelectHome: (id) => {
+          void switchHome(id).then((result) => {
+            if (result.ok) {
+              tray?.setActiveHome(id)
+              return
+            }
+            // A failed switch leaves the kernel running against whichever home
+            // it was on, so say so plainly rather than letting the menu show a
+            // choice that never took effect.
+            console.warn(`home switch refused: ${result.error ?? 'unknown reason'}`)
+            tray?.notify('切换 Home 未生效', result.error ?? '原因未知')
+          })
+        },
+        onAddHome: () => void addHomeFromPicker(),
       })
 
       // The kernel may already be ready by the time the tray exists; backfill
