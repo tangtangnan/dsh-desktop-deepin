@@ -5,16 +5,16 @@
   <a href="https://github.com/westanke/dsh-desktop-deepin/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/westanke/dsh-desktop-deepin?include_prereleases"></a>
   <a href="https://gitee.com/westanke/dsh-desktop-deepin/releases"><img alt="Gitee" src="https://img.shields.io/badge/Gitee-%E5%90%8C%E6%AD%A5-orange"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Deepin%20%7C%20UOS-blueviolet">
-  <img alt="tests" src="https://img.shields.io/badge/tests-257%20passing-brightgreen">
   <img alt="typecheck" src="https://img.shields.io/badge/tsc--noEmit-0%20errors-success">
 </p>
 
-**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a ~150 KB deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors; an offline variant with everything bundled can be built locally for air-gapped machines. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and 257 unit tests plus a real-kernel e2e keep it that way.
+**English (short).** A community Electron desktop shell for the [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) agent runtime, built for Deepin / UOS / Linux. It ships a shell-only deb (amd64 + arm64) that bootstraps Electron/Node/kernel on first run from China mirrors; an offline variant with everything bundled can be built locally for air-gapped machines. Linux is not an afterthought here: timezone quirks, `apt` dependency handling, multi-user config layering, kernel process-group management and orphaned MCP-server reaping are all first-class, and a unit-test suite plus a real-kernel e2e keep it that way.
 
 面向 Deepin / UOS / Linux 的 DeepSeek Harness 桌面壳。把命令行 agent 运行时
 `dsh` 包进一个 Electron 窗口：双击即用，不必开终端。
 
-> **状态**：可用。单测 257/257 通过、`tsc --noEmit` 零错误、内核 e2e 5/5，已在
+> **状态**：可用。单元测试全绿、`tsc --noEmit` 零错误、内核 e2e 通过（见上方 CI 徽章，
+> 本地跑 `npm run test:all` 复现），已在
 > UOS Desktop 20 Professional（glibc 2.31）与 Deepin 25 上真机验证（窗口加载、内核就绪、
 > 托盘、菜单）。内核是上游开发预览版，配置面仍在变化。
 
@@ -62,7 +62,7 @@ Tauri 体积小、内存低，看着是更"现代"的选择，社区里也有同
 
 **Electron 的取舍正好相反**：它自带 Chromium，**不依赖系统 WebView**，所以 Deepin 20 /
 UOS 20 这类老系统与 Deepin 25 / UOS 25 这类新系统跑的是**同一个浏览器内核**，行为可预期；
-代价是首次启动要下载约 180 MB 运行时——而这一点被「deb 只装 150 KB 壳代码 + 装完后台
+代价是首次启动要下载约 180 MB 运行时——而这一点被「deb 只装约 160 KB 壳代码 + 装完后台
 预下载」抵掉了。
 
 > 一句话：选 Electron 不是因为它小（它不小），而是因为它**把不确定性从用户的系统搬进了
@@ -71,11 +71,11 @@ UOS 20 这类老系统与 Deepin 25 / UOS 25 这类新系统跑的是**同一个
 > 补一句实话：本壳的代码基线本就来自一个 Electron 壳，改用 Tauri 意味着重写窗口、托盘、
 > 菜单与进程治理全部上层——但即便从零开始，上面第一条（WebView 依赖）也足以让 Tauri 2 出局。
 
-### 安装包约 150 KB，运行时按需获取
+### 安装包约 160 KB，运行时按需获取
 
 deb 里**只有壳的代码**，不含 Electron（约 364 MB）、Node（约 25 MB）与 dsh 内核（约 30 MB）。
 装完后 `postinst` 会**以你自己的账号**在后台预下载，等你去点启动器时通常已经就绪——
-「装完即用」的体验，而包还是 150 KB。机器上已有可复用的运行时则完全不下。
+「装完即用」的体验，而包还是 160 KB。机器上已有可复用的运行时则完全不下。
 
 ### 开箱自带四个插件，不用去市场翻
 
@@ -126,10 +126,10 @@ Electron 与 Node 的下载都校验对应版本的 `SHASUMS256.txt`；国内镜
 
 | 格式 | 覆盖系统 | 说明 |
 |---|---|---|
-| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 在线版，约 150 KB；装到 `/opt`，注册启动器与图标，首启下载运行时 |
+| `*.deb`（amd64 / arm64） | Debian / Ubuntu / **UOS / Deepin** / 麒麟 | 在线版，约 160 KB；装到 `/opt`，注册启动器与图标，首启下载运行时 |
 | `*-offline-*.deb`（自建） | 同上 | **不在 release 提供**。有内网/离线机需求时自己打：见下文「离线双通道」 |
 
-### 安装包只有约 150 KB——因为运行时按需获取
+### 安装包只有约 160 KB——因为运行时按需获取
 
 **这一点必须在安装前知道：首次启动会下载 Electron（约 180 MB），需要等几分钟。**
 
@@ -141,7 +141,7 @@ Electron 与 Node 的下载都校验对应版本的 `SHASUMS256.txt`；国内镜
 | Node 运行时 | 约 25 MB | 你机器上多半已经有了，内核可以直接用系统的 |
 | dsh 内核 | 约 30 MB | 同上；而且内核升级频繁，打进包会很快过时 |
 
-把这三样打进去，安装包会从 **150 KB 膨胀到 250 MB 以上**，而其中 90% 的内容对
+把这三样打进去，安装包会从 **约 160 KB 膨胀到 250 MB 以上**，而其中 90% 的内容对
 「已经装过 dsh 的机器」是重复的。所以本包采取按需获取：
 
 ```sh
@@ -200,7 +200,7 @@ sudo apt install ./DeepSeek-Harness-Desktop-<版本>-amd64.deb
 
 `apt install` 结束后，安装脚本会以**你自己的账号**（不是 root）在后台自动开始
 下载运行时 —— 所以绝大多数情况下，等你双击启动器时它已经就绪，跟「装完即用」
-没区别，而包还是只有 150 KB。
+没区别，而包还是只有 160 KB。
 
 - 下载在后台跑，`apt install` 立即返回，不会卡住安装进度
 - 日志：`~/.dsh-desktop/bootstrap-postinst.log`
@@ -512,7 +512,8 @@ Debian/UOS 基础系统里必定存在。这是刻意的：它的职责是「检
 
 ```sh
 npm install              # 壳依赖与类型
-npm test                 # 单元测试 257 个，不联网、不需要 Electron
+npm test                 # 单元测试，不联网、不需要 Electron（跑完会打印通过/总数）
+npm run test:all         # 再加一个真实内核的端到端测试
 npm run typecheck        # tsc --noEmit
 npm run doctor           # 运行时自检：Electron / Node / dsh 就绪情况
 npm start                # 启动
@@ -541,7 +542,7 @@ bash tools/build-deb.sh amd64   # 或 arm64；第二个参数可指定版本号
 ```
 
 产物在 `release/`。**本地打包不会下载内核、Node 或 Electron**——这三样由最终用户
-运行时按需获取（见「下载与安装」），deb 里只有约 150 KB 的壳代码。
+运行时按需获取（见「下载与安装」），deb 里只有约 160 KB 的壳代码。
 
 **离线双通道（自建，不在 release 提供）**：给无法稳定访问网络的机器打全自带包——
 
