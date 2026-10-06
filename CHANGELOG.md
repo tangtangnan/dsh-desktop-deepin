@@ -6,7 +6,41 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-（暂无）
+### 修复
+
+- **安装/卸载「无进度」，并连带拖死应用商店**。0.2.12 的 `postinst` 把默认插件补装
+  放在前台同步执行（`runuser … bash install-plugins.sh`，既无 `&` 也无 `timeout`）。
+  maintainer script 属于 dpkg 事务，一次挂死就独占了 `/var/lib/dpkg/lock-frontend`：
+  装包、卸载、乃至应用商店的其它升级全部卡在等锁，`dpkg` 状态停在 `iU`（解包未配置）、
+  `/var/lib/dpkg/updates/` 留下未提交 journal。现改为与预下载一致的 `setsid nohup … &`
+  后台派发，并补齐三项防护：`run_capped()` 超时熔断（`bootstrap check` 30 秒、
+  `loginctl` 10 秒）、后台任务 fd 隔离（`</dev/null >>log 2>&1`，切断与 dpkg 输出管道的
+  继承，避免调用方读不到 EOF 而永远停在「无进度」）、降权后显式重设 `HOME`
+  （`runuser` 不像 login shell 那样改 `HOME`，否则运行时与插件会被装进 root 家目录）。
+  实测 `postinst` 返回耗时由「永不返回」降至 77–80 ms。真机日志
+  （`~/.dsh-desktop/bootstrap-postinst.log`）留下了事故当时的直接证据：四个插件被
+  完整安装了两轮、合计 44 秒 —— 这 44 秒正是 dpkg 事务当时干等的时长。两处冗余
+  （`bootstrap install` 在运行时已就绪后仍会补插件，而那段独立补装又会再跑一遍）
+  现已合并为单个后台任务串行执行，既避免并发争抢 pnpm 依赖缓存，也让第二段因
+  查重命中而直接跳过。
+- **维护者脚本的「单一事实来源」从未生效**。`build-deb.sh` 中 `STAGE="$ROOT/debian"`，
+  而打包第一步是 `rm -rf "$STAGE"` —— 源文件 `debian/DEBIAN/postinst` 会在打包开始时被
+  自己删掉，随后的 `cp` 必然失败并静默回落 heredoc 兜底（仓库源 4049 字节 vs 包内实际
+  4214 字节，长期不一致），即**对源文件的任何修改都不会进包**。源码已迁至
+  `packaging/DEBIAN/`，与暂存目录分离；取消 heredoc 兜底，源缺失即构建失败；
+  `.gitignore` 恢复对 `debian/` 的整目录忽略。
+- **Electron 版本探测会被 `ELECTRON_RUN_AS_NODE=1` 污染**。该变量下 Electron 以 Node
+  模式运行，`--version` 报出的是它内捆的 Node 版本（实测 Electron 33.3.0 被报成
+  `v20.18.1`），于是被判「低于 v33 → 缺失」，白白触发一次约 180MB 的重复下载。
+  新增 `electron_version()`：优先读发行包自带的 `version` 文件（纯文本、零进程开销、
+  不受环境变量污染），回退时才 `env -u ELECTRON_RUN_AS_NODE` 执行二进制。
+
+### 新增
+
+- **`prerm` / `postrm`**。`prerm` 在卸载/升级前收掉残留的后台预热进程，并清理
+  `.bootstrap-install.lock`，避免重装被误判「已有安装进程在下载」而直接跳过；
+  `postrm` 只做交接提示，不删除用户数据（`~/.dsh-desktop` 属于用户，卸载一个壳
+  不该顺手清掉用户的家当）。
 
 ## [0.2.12] — 2026-10-06
 

@@ -98,8 +98,12 @@ fi
 # >/dev/null   ：派发动作自身的输出丢弃；真正的日志由内层降权 shell 打开。
 # HOME 重设    ：见文件头第 4 条铁律。
 spawn_as_user() {
-  local script="$1"
-  local inner="mkdir -p '$INSTALL_HOME/.dsh-desktop' && exec bash '$script' >>'$LOG_FILE' 2>&1"
+  local cmd="$1"
+  # 内层（已降权）自己建目录、切到家目录，再把整串预热命令的输出写进日志：
+  # 这样日志的属主是用户本人，而不是 root。历史版本的日志落在用户目录下却是
+  # root:root —— 因为外层重定向是在降权之前由 root 打开的。
+  # 参数是一段 shell 命令（可以是多条，用 ; 串起来），在单个后台任务里串行执行。
+  local inner="mkdir -p '$INSTALL_HOME/.dsh-desktop' && cd '$INSTALL_HOME' && { $cmd; } >>'$LOG_FILE' 2>&1"
   if command -v runuser >/dev/null 2>&1; then
     runuser -u "$INSTALL_USER" -- \
       env HOME="$INSTALL_HOME" USER="$INSTALL_USER" LOGNAME="$INSTALL_USER" \
@@ -111,26 +115,36 @@ spawn_as_user() {
   fi
 }
 
-# ── 4) 后台预下载运行时（约 180MB，不阻塞安装）────────────────────────
-if [ "${DSH_NO_POSTINST_DOWNLOAD:-}" = "1" ]; then
-  echo "（已设置 DSH_NO_POSTINST_DOWNLOAD=1，跳过安装后后台预热）"
-elif [ "$USER_OK" -eq 1 ] && [ -x "$BOOTSTRAP" ]; then
-  echo "正在为 $INSTALL_USER 后台预下载运行时（约 180MB，不阻塞安装）…"
-  spawn_as_user "$BOOTSTRAP install"
-  echo "下载在后台进行；完成后双击启动器即可直接使用。"
-else
-  echo "（未能识别登录用户，跳过预下载；首次启动时会自动补齐）"
+# ── 4) 后台预热：单个后台任务内串行完成「补运行时 + 补默认插件」───────
+#
+# 【本段是 v0.2.12 卡死事故的直接修复点：插件补装此前是前台同步执行。】
+#
+# 为什么合成一个任务、而不是各派一个：
+#   · 真机日志（~/.dsh-desktop/bootstrap-postinst.log）显示，bootstrap install
+#     在运行时已就绪时仍会继续补插件，而那段独立的插件补装也会再跑一遍，
+#     两轮合计 44 秒 —— 这正是当时 dpkg 事务干等的时长。
+#   · 两者若并发，会同时调 `dsh plugin add` 与 pnpm，争抢同一份依赖缓存。
+#     串行既躲开争抢，又让第二段因查重命中而直接跳过。
+#
+# DSH_NO_POSTINST_DOWNLOAD=1 只跳过「运行时预下载」（那才是 180MB 的大件），
+# 插件补装照旧 —— 它很轻，且已装时秒退。
+WARMUP_CMD=""
+if [ "${DSH_NO_POSTINST_DOWNLOAD:-}" != "1" ] && [ -x "$BOOTSTRAP" ]; then
+  WARMUP_CMD="bash '$BOOTSTRAP' install"
+fi
+if [ -x "$PLUGINS_SCRIPT" ]; then
+  [ -n "$WARMUP_CMD" ] && WARMUP_CMD="$WARMUP_CMD; "
+  WARMUP_CMD="${WARMUP_CMD}bash '$PLUGINS_SCRIPT'"
 fi
 
-# ── 5) 后台补装默认插件（升级用户也覆盖到）────────────────────────────
-# 幂等：install-plugins.sh 内部用 `dsh plugin list` 查重，已装则跳过、
-# 不动版本。独立于 bootstrap 的预下载路径 —— 升级场景运行时已就绪，
-# bootstrap install 会「全部就绪」提前退出，到不了插件步骤，故此处单独派发。
-#
-# 【本段是 v0.2.12 卡死事故的直接修复点：此前为前台同步执行。】
-if [ "$USER_OK" -eq 1 ] && [ -x "$PLUGINS_SCRIPT" ]; then
-  echo "默认插件（dsh-im / pocket-relay / mcp-panel / market）将在后台检查补齐…"
-  spawn_as_user "$PLUGINS_SCRIPT"
+if [ "$USER_OK" -eq 1 ] && [ -n "$WARMUP_CMD" ]; then
+  echo "正在为 $INSTALL_USER 后台预热（补运行时 + 默认插件），不阻塞安装…"
+  spawn_as_user "$WARMUP_CMD"
+  echo "完成后双击启动器即可直接使用。"
+elif [ "$USER_OK" -eq 1 ]; then
+  echo "（已设置 DSH_NO_POSTINST_DOWNLOAD=1，且无插件补装项，跳过后台预热）"
+else
+  echo "（未能识别登录用户，跳过后台预热；首次启动时会自动补齐）"
 fi
 
 echo ""
