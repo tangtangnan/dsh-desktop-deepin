@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# 安装后自检 + 后台预热。
+#
+# ── 设计铁律 ──────────────────────────────────────────────────────────
+# maintainer script 是 dpkg 事务的一部分：它每多阻塞一秒，整机包管理
+# （apt / 图形安装器 / 应用商店）就多瘫痪一秒 —— 因为全局只有一把
+# /var/lib/dpkg/lock-frontend。所以本脚本必须做到「无论如何都在秒级返回」：
+#
+#   1. 所有联网 / 耗时动作一律 setsid 后台 detach，绝不在事务里前台等待；
+#   2. 无法后台化的只读探测（bootstrap check、loginctl）一律套 timeout 熔断；
+#   3. 后台任务完整接管三个标准 fd（</dev/null >>log 2>&1），切断与 dpkg
+#      输出管道的一切继承 —— 否则 dpkg 退出后写端仍被攥着，调用方
+#      （qaptworker / 图形安装器）读不到 EOF，界面就永远停在「无进度」；
+#   4. 降权后显式重设 HOME —— runuser 不像 login shell 那样改 HOME，不指定
+#      的话后台任务会带着 HOME=/root 运行，把运行时和插件装进 root 家目录；
+#   5. 全程不 set -e，末尾恒 exit 0：自检失败不能让装包事务回滚。
+#
+# ── 事故背景（v0.2.12）────────────────────────────────────────────────
+# 该版把「默认插件补装」放在前台同步执行（runuser … bash install-plugins.sh，
+# 既无 & 也无 timeout）。一次挂死就独占了 dpkg 前端锁，导致装、卸、
+# 应用商店升级全部「无进度」，dpkg 数据库停在 iU（解包未配置）、
+# /var/lib/dpkg/updates/ 留下 7 个未提交 journal。
+# 本版把它改为与预下载完全一致的后台任务，并补齐 timeout 与 fd 隔离。
+#
+# 关闭安装期后台预热（离线装机 / 弱网环境推荐）：
+#   sudo DSH_NO_POSTINST_DOWNLOAD=1 apt install ./xxx.deb
+set -uo pipefail
+
+INSTALL_DIR="/opt/deepseek-harness-desktop"
+BOOTSTRAP="$INSTALL_DIR/tools/bootstrap.sh"
+PLUGINS_SCRIPT="$INSTALL_DIR/tools/install-plugins.sh"
+
+echo ""
+echo "DeepSeek Harness Desktop 已安装到 $INSTALL_DIR"
+echo ""
+
+# ── 超时熔断器 ────────────────────────────────────────────────────────
+# coreutils 属 Debian Essential，timeout 正常必然存在；缺失时退化为直接
+# 执行（只为极端裁剪系统兜底，不改变正常路径的行为）。
+run_capped() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
+# ── 1) 运行时自检：只读探测，30 秒熔断 ────────────────────────────────
+if [ -x "$BOOTSTRAP" ]; then
+  echo "正在检查运行时依赖（Electron / Node / dsh）…"
+  echo ""
+  run_capped 30 bash "$BOOTSTRAP" check || {
+    echo ""
+    echo "提示：缺少运行时依赖（或自检超时）。自动下载："
+    echo "  bash $BOOTSTRAP install"
+    echo "或直接启动（首次启动也会自动补齐）："
+    echo "  bash $INSTALL_DIR/start-shell.sh"
+    echo ""
+  }
+fi
+
+# ── 2) 认人：找出真实登录用户 ─────────────────────────────────────────
+# 优先级：$SUDO_USER（sudo 场景）→ loginctl 活跃用户 → /home 下第一个真实
+# 用户。loginctl 走 D-Bus，服务异常时会挂住，故同样套熔断；后两个来源在
+# 「worker 环境看不到 /home」时可能都落空，那时静默降级为不做预热。
+INSTALL_USER="${SUDO_USER:-}"
+if [ -z "$INSTALL_USER" ] || [ "$INSTALL_USER" = "root" ]; then
+  INSTALL_USER="$(run_capped 10 loginctl list-users --no-legend 2>/dev/null \
+    | awk '{print $2}' | grep -v '^root$' | head -1)"
+fi
+if [ -z "$INSTALL_USER" ]; then
+  for candidate in /home/*; do
+    [ -d "$candidate" ] || continue
+    name="$(basename "$candidate")"
+    if id "$name" >/dev/null 2>&1; then INSTALL_USER="$name"; break; fi
+  done
+fi
+
+USER_OK=0
+if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ] && id "$INSTALL_USER" >/dev/null 2>&1; then
+  USER_OK=1
+fi
+
+INSTALL_HOME=""
+LOG_FILE=""
+if [ "$USER_OK" -eq 1 ]; then
+  INSTALL_HOME="/home/$INSTALL_USER"
+  # 日志落在该用户自己的 .dsh-desktop 下：不用 /tmp，也避免 root 写用户
+  # 目录造成属主错乱。目录由降权后的用户自己创建（见 spawn_as_user）。
+  LOG_FILE="$INSTALL_HOME/.dsh-desktop/bootstrap-postinst.log"
+fi
+
+# ── 3) 后台任务派发器 ─────────────────────────────────────────────────
+# setsid + nohup：脱离 apt 的进程组，apt/dpkg 结束后继续跑。
+# &            ：立刻返回，绝不让 dpkg 事务等它。
+# </dev/null   ：不继承 dpkg 的 stdin。
+# >/dev/null   ：派发动作自身的输出丢弃；真正的日志由内层降权 shell 打开。
+# HOME 重设    ：见文件头第 4 条铁律。
+spawn_as_user() {
+  local script="$1"
+  local inner="mkdir -p '$INSTALL_HOME/.dsh-desktop' && exec bash '$script' >>'$LOG_FILE' 2>&1"
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$INSTALL_USER" -- \
+      env HOME="$INSTALL_HOME" USER="$INSTALL_USER" LOGNAME="$INSTALL_USER" \
+      setsid nohup bash -c "$inner" </dev/null >/dev/null 2>&1 &
+  else
+    # su - 自带 login 语义（HOME 已是正确的），无需再 env 一次。
+    su - "$INSTALL_USER" -c \
+      "setsid nohup bash -c \"$inner\" </dev/null >/dev/null 2>&1 &"
+  fi
+}
+
+# ── 4) 后台预下载运行时（约 180MB，不阻塞安装）────────────────────────
+if [ "${DSH_NO_POSTINST_DOWNLOAD:-}" = "1" ]; then
+  echo "（已设置 DSH_NO_POSTINST_DOWNLOAD=1，跳过安装后后台预热）"
+elif [ "$USER_OK" -eq 1 ] && [ -x "$BOOTSTRAP" ]; then
+  echo "正在为 $INSTALL_USER 后台预下载运行时（约 180MB，不阻塞安装）…"
+  spawn_as_user "$BOOTSTRAP install"
+  echo "下载在后台进行；完成后双击启动器即可直接使用。"
+else
+  echo "（未能识别登录用户，跳过预下载；首次启动时会自动补齐）"
+fi
+
+# ── 5) 后台补装默认插件（升级用户也覆盖到）────────────────────────────
+# 幂等：install-plugins.sh 内部用 `dsh plugin list` 查重，已装则跳过、
+# 不动版本。独立于 bootstrap 的预下载路径 —— 升级场景运行时已就绪，
+# bootstrap install 会「全部就绪」提前退出，到不了插件步骤，故此处单独派发。
+#
+# 【本段是 v0.2.12 卡死事故的直接修复点：此前为前台同步执行。】
+if [ "$USER_OK" -eq 1 ] && [ -x "$PLUGINS_SCRIPT" ]; then
+  echo "默认插件（dsh-im / pocket-relay / mcp-panel / market）将在后台检查补齐…"
+  spawn_as_user "$PLUGINS_SCRIPT"
+fi
+
+echo ""
+echo "安装事务已结束（后台预热不影响包管理器）。"
+[ -n "$LOG_FILE" ] && echo "后台日志：$LOG_FILE"
+exit 0

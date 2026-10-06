@@ -227,6 +227,24 @@ version_ge() {
   [ "$aj" -ge "$bj" ]
 }
 
+# ── 探测 Electron 版本 ─────────────────────────────────────────────────
+# 优先读发行包自带的 version 文件：纯文本读取、零进程开销，且不受环境变量
+# 污染。为什么不能只靠 `electron --version`：当 ELECTRON_RUN_AS_NODE=1 时
+# Electron 会以 Node 模式运行，--version 报出的是它内捆的 Node 版本
+# （实测 Electron 33.3.0 被报成 v20.18.1），于是被判「低于 v33 → 缺失」，
+# 白白触发一次约 180MB 的重复下载。而从 dsh 壳（本身是 Electron 应用）
+# 派生的进程恰好继承了这个变量，故必须兜住。
+electron_version() {
+  local bin="$1" vf v=""
+  vf="$(dirname "$bin")/version"
+  if [ -f "$vf" ]; then
+    v="$(head -1 "$vf" 2>/dev/null)"
+    [ -n "$v" ] && { printf 'v%s' "${v#v}"; return 0; }
+  fi
+  v="$(env -u ELECTRON_RUN_AS_NODE "$bin" --version 2>/dev/null || echo '?')"
+  printf '%s' "$v"
+}
+
 # ── 定位一个可执行文件 ─────────────────────────────────────────────────
 # 参数：配置里的值、命令名、若干候选绝对路径
 locate() {
@@ -323,7 +341,7 @@ report() {
   fi
 
   if [ -n "$ELECTRON_BIN" ]; then
-    local v; v="$("$ELECTRON_BIN" --version 2>/dev/null || echo '?')"
+    local v; v="$(electron_version "$ELECTRON_BIN")"
     if version_ge "$v" "v${ELECTRON_MIN_MAJOR}.0"; then
       ok "Electron  $v   $ELECTRON_BIN"
     else

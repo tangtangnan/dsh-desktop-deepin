@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# 卸载 / 升级前调用：收掉本包留在后台的预热进程。
+#
+# 为什么需要：postinst 派发的 bootstrap / install-plugins 后台任务不属于
+# dpkg 事务，卸载时不会自动终止。它们若还在跑：
+#   · 会继续写 ~/.dsh-desktop/runtime，与随后的重装撞车；
+#   · bootstrap.sh 的 .bootstrap-install.lock 目录可能残留，导致新装的
+#     postinst 误判「已有安装进程在下载」而直接跳过，表现为升级后运行时不补。
+# 故在卸载路径上先礼后兵地收一遍。
+#
+# 铁律同 postinst：maintainer script 在 dpkg 事务内，必须秒级返回。
+# pkill 很快，且整段裹在 command -v 判断里，procps 缺失时静默跳过。
+set -uo pipefail
+
+INSTALL_DIR="/opt/deepseek-harness-desktop"
+
+if command -v pkill >/dev/null 2>&1; then
+  # 路径限定得很具体，不会误伤用户手动执行的其他脚本。
+  pkill -f "$INSTALL_DIR/tools/bootstrap.sh" 2>/dev/null || true
+  pkill -f "$INSTALL_DIR/tools/install-plugins.sh" 2>/dev/null || true
+fi
+
+# 清掉可能残留的互斥锁，避免下次安装被「已有安装进程」误挡。
+for home in /home/*; do
+  lock="$home/.dsh-desktop/runtime/.bootstrap-install.lock"
+  [ -d "$lock" ] && rmdir "$lock" 2>/dev/null || true
+done
+
+exit 0

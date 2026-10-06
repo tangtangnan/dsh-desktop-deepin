@@ -22,12 +22,11 @@ release/
 release-unpacked/
 linux-unpacked/
 # debian/ 是 build-deb.sh 的打包暂存目录（构建产物，一律不入库）。
-# 唯一例外：DEBIAN/postinst 是源码级控制脚本（build-deb.sh 优先 cp 它），
-# 必须入库——此前整目录被忽略导致它从未进仓库，CI 打包一直走 heredoc 兜底。
-debian/*
-!debian/DEBIAN/
-debian/DEBIAN/*
-!debian/DEBIAN/postinst
+# 维护者脚本的源码单列在 packaging/DEBIAN/ 下入库——不能放这里，因为打包
+# 第一步就是 rm -rf debian/，放这儿会被自己删掉（详见 build-deb.sh 注释）。
+# 此前那套「!debian/DEBIAN/postinst」豁免只解决了一半问题：文件确实进了仓库，
+# 但打包时 cp 依然失败，实际进包的始终是 heredoc 兜底版。
+debian/
 *.tsbuildinfo
 
 # --- electron-builder / Electron cache ---

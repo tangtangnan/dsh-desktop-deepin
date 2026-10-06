@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# 卸载后调用：这里刻意什么都不删，只做交接提示。
+#
+# 用户数据（~/.dsh-desktop 下的运行时、插件、会话、凭据）属于用户而非本包，
+# 卸载一个壳不该顺手清掉用户的家当 —— 那是最容易招恨的「贴心」行为。
+# 真要彻底清理时由用户自己动手（提示里给出路径）。
+#
+# $1 = remove / purge / upgrade / failed-upgrade …，只有 remove/purge 才提示。
+set -uo pipefail
+
+case "${1:-}" in
+  remove|purge)
+    echo ""
+    echo "DeepSeek Harness Desktop 已卸载。"
+    echo "运行时与插件数据仍保留在 ~/.dsh-desktop（如需彻底清理请手动删除）。"
+    echo ""
+    ;;
+  *)
+    # upgrade / failed-upgrade：升级过程中静默通过，不要打扰用户。
+    ;;
+esac
+
+exit 0
