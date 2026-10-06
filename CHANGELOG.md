@@ -6,7 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-（暂无）
+### 变更
+
+- **CI 的测试矩阵由三平台收敛为 ubuntu**。本项目只发 Linux deb（Deepin / UOS），
+  Windows 与 macOS 既不做安装包、也不发布任何产物，继续在这两个平台上跑单元测试
+  只产生噪音：`windows-latest` 固定失败 5 项（断言写的是 POSIX 路径字面量
+  `/home/u/.dsh`，而 Windows 的 `path.join` 产出反斜杠 `\home\u\.dsh`，那组断言
+  从未被设计为跨平台），`macos-latest` 则因同为 POSIX 而恰好通过、同样只是在测一个
+  不发行的平台。`e2e` job 早已按同一理由收敛到 ubuntu，`check` job 属遗漏，本次补齐
+  一致性 —— 两个 job 现在都只在产物真正服务的平台上测试。将来若真要支持某平台，
+  届时连断言一起补。
 
 ## [0.2.13] — 2026-10-06
 

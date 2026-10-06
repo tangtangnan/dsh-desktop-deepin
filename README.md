@@ -526,7 +526,7 @@ npm start                # 启动
 
 | workflow | 触发 | 作用 |
 |---|---|---|
-| `.github/workflows/ci.yml` | push main / PR | 三平台跑测试 + scan-leaks |
+| `.github/workflows/ci.yml` | push main / PR | ubuntu 跑测试 + scan-leaks |
 | `.github/workflows/package-linux.yml` | 打 `v*` tag / 手动 | **deb（amd64 + arm64）打包挂 release，并同步 Gitee** |
 
 手动触发打包（或在 Actions 页面点 Run workflow）：
