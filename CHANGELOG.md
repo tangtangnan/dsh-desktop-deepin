@@ -6,8 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+（暂无）
+
+## [0.2.13] — 2026-10-06
+
 ### 修复
 
+- **空白的内核 Home 覆盖值会被当成有效路径，把家安到当前工作目录**。`--dsh-home` 或
+  `DSH_HOME` 被设为纯空白时，此前会被原样采信：空路径解析到进程的当前工作目录，于是
+  内核的家取决于「壳是从哪儿启动的」。现在空白值一律视为未设置，回落到上次记住的家；
+  非空值也会先 `trim` 再展开 `~`，行为与官方 `@deepseek-ai/dsh-home-paths` 的
+  `resolveDshHome` 对齐（同样拒绝纯空白的覆盖）。
 - **安装/卸载「无进度」，并连带拖死应用商店**。0.2.12 的 `postinst` 把默认插件补装
   放在前台同步执行（`runuser … bash install-plugins.sh`，既无 `&` 也无 `timeout`）。
   maintainer script 属于 dpkg 事务，一次挂死就独占了 `/var/lib/dpkg/lock-frontend`：

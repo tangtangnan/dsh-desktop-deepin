@@ -270,11 +270,17 @@ export function chooseHome({
   // An explicit request is used even when it names nothing known: pointing the
   // shell at a directory nobody has registered yet is how a brand-new home gets
   // created, and silently falling back would make that impossible to do.
-  if (typeof cliValue === 'string' && cliValue !== '') {
-    return { path: expandTilde(cliValue, home), id: null, source: 'cli' }
+  //
+  // A blank value is treated as absent rather than as a path — matching
+  // `resolveDshHome` in `@deepseek-ai/dsh-home-paths`, which rejects
+  // whitespace-only overrides for a concrete reason: an empty path resolves
+  // against the *current working directory*, so `DSH_HOME="   "` would quietly
+  // put the kernel home wherever the launcher happened to be started from.
+  if (typeof cliValue === 'string' && cliValue.trim() !== '') {
+    return { path: expandTilde(cliValue.trim(), home), id: null, source: 'cli' }
   }
-  if (typeof envValue === 'string' && envValue !== '') {
-    return { path: expandTilde(envValue, home), id: null, source: 'env' }
+  if (typeof envValue === 'string' && envValue.trim() !== '') {
+    return { path: expandTilde(envValue.trim(), home), id: null, source: 'env' }
   }
 
   const active = homes.find((entry) => /** @type {any} */ (entry).id === activeId)

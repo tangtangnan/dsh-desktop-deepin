@@ -278,6 +278,44 @@ describe('chooseHome', () => {
     assert.equal(result.source, 'default')
   })
 
+  // Mirrors `@deepseek-ai/dsh-home-paths`' `resolveDshHome`, which treats a
+  // whitespace-only override as unset. An empty value would otherwise resolve
+  // against the current working directory and put the home wherever the
+  // launcher happened to start.
+  it('treats a whitespace-only environment value as unset', () => {
+    const result = chooseHome({
+      homes,
+      activeId: 'default',
+      defaultPath: '/home/u/.dsh',
+      envValue: '   ',
+    })
+    // Not 'env': the blank override is skipped, so the remembered home wins.
+    assert.equal(result.source, 'registry')
+    assert.equal(result.path, '/home/u/.dsh')
+  })
+
+  it('treats a whitespace-only command-line value as unset', () => {
+    const result = chooseHome({
+      homes,
+      activeId: 'default',
+      defaultPath: '/home/u/.dsh',
+      cliValue: '  ',
+    })
+    // Not 'cli': the blank flag is skipped, so the remembered home wins.
+    assert.equal(result.source, 'registry')
+    assert.equal(result.path, '/home/u/.dsh')
+  })
+
+  it('trims surrounding whitespace from an otherwise valid override', () => {
+    const result = chooseHome({
+      homes,
+      activeId: 'default',
+      defaultPath: '/home/u/.dsh',
+      envValue: '  /srv/work  ',
+    })
+    assert.equal(result.path, '/srv/work')
+  })
+
   // Pointing the shell at a directory nobody has registered is how a new home
   // gets created; falling back would make that impossible to do.
   it('honours an explicit path even when it names nothing known', () => {
