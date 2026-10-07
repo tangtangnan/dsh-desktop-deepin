@@ -114,7 +114,8 @@ deb 里**只有壳的代码**，不含 Electron（约 364 MB）、Node（约 25 
 | 插件把内核搞崩，壳自己进不去、也没法卸插件（死锁） | **安全模式**：停用全部第三方 bundle，用户 patch 层备份改名，且不持久化 |
 | 内核非正常退出后，`npm exec` 拉起的 MCP 服务器被 init 收养、永远活着 | **孤儿收割**：给内核注入进程印记，退出后扫描 `/proc` 按印记收割整棵进程树（24 个单测） |
 | 端口开着但其实不是我们的内核 | **就绪判定必须拿到真实 HTTP 响应**，端口占用不算 |
-| 崩溃后一片空白 | 崩溃报告落盘（保留最新 10 份）+ 日志进缓冲区即脱敏 + 渲染进程 60 秒内自愈 3 次 |
+| 崩溃后一片空白 | 崩溃报告落盘（保留最新 10 份、目录 0700 文件 0600、同毫秒不覆盖）+ 日志进缓冲区即脱敏 + 渲染进程 60 秒内自愈 3 次 |
+| 内核反复退出，窗口里只剩一张错误页 | **原生恢复对话框**：报告先落盘再弹窗（写入上限 1 秒，慢盘不把人扣住），给「退出 / 重启 / 禁用第三方插件并重启」三条路；端口占用单独识别——那是另一个 dsh 还在跑，不是插件问题，所以那条路上不提供「禁用插件」 |
 
 ### 供应链可验证，且失败时不静默
 
@@ -267,7 +268,9 @@ bash /opt/deepseek-harness-desktop/tools/install-plugins.sh force    # 全部重
 | 进程组整体回收 | `src/kernel-process.js` | Unix 下子进程自任组长，退出时 `kill(-pid)` 连孙进程一起收 |
 | 系统内核模式 | `src/main.js` `resolveKernelPaths` | 设 `DSH_KERNEL_BIN` 即可驱动系统已装的 `dsh`，用真 Node 跑 |
 | 固定端口 | `src/main.js` `preferredPort` | 默认 `19387`（官方同款）；被占用则自动退回随机端口 |
-| 崩溃报告 | `src/diagnostics.js` | 写 `userData/logs/crash-<UTC>-<来源>.log`，保留最新 10 份，输出限 64 KiB |
+| 崩溃报告 | `src/diagnostics.js` | 写 `userData/logs/crash-<UTC>-<来源>.log`，保留最新 10 份，输出限 64 KiB；目录 0700 文件 0600，`wx` 拒绝覆盖 |
+| 崩溃恢复对话框 | `src/fatal-recovery.js` | 先落盘报告再弹窗（上限 1 秒）；详情截 1200 字留末 8 行、按码点切不截断代理对；三分支按钮，恢复失败重新询问而非退出；一次进程只弹一次 |
+| 终端里也能用 | `src/login-shell-environment.js` `src/cli-command.js` | GUI 启动只继承会话管理器变量，所以启动前读一次登录 shell（`-ilc` + NUL 定界，10 秒上限，失败即回落继承环境）；`dsh` 命令可装到 `~/.local/bin`，带指纹记账，只动能证明是自己装的那一个 |
 | 多个内核 Home | `src/dsh-home-manager.js` | 可登记多个 `DSH_HOME` 并在托盘切换；注册表存 `userData/dsh-homes.json`，刻意放在所有 Home 之外 |
 | 命令行指定 Home | `src/dsh-home-manager.js` | `--dsh-home=<路径>` 直接用某个目录启动，优先级高于一切 remembered 选择；适合做多个快捷方式 |
 
@@ -592,6 +595,9 @@ offline 包内嵌官方压缩包与对应的 `SHASUMS256.txt`：`bootstrap.sh` �
 | `src/exit-guard.js` | 退出前是否要问 |
 | `src/safe-mode.js` | 安全模式该停用哪些 bundle |
 | `src/diagnostics.js` | 崩溃报告写哪、留几份 |
+| `src/fatal-recovery.js` | 崩溃后给用户哪几条路 |
+| `src/login-shell-environment.js` | GUI 启动怎么补回登录 shell 的环境 |
+| `src/cli-command.js` | `dsh` 命令怎么装、怎么保证不误删用户的 |
 | `src/config-file.js` | 配置如何写才不撕裂 |
 | `src/desktop-commands.js` | 网页能请求哪些桌面动作 |
 | `src/runtime-doctor.js` | Electron/Node/dsh 在不在、版本够不够 |
