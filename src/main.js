@@ -12,7 +12,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { mkdir, symlink, cp } from 'node:fs/promises'
 import { dirname, basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, screen, shell } from 'electron'
 import { findFreePort } from './kernel-process.js'
 import { KernelSupervisor } from './kernel-supervisor.js'
 // Deprecated: kept for the rollback path. The scheme URL in `loadingUrl` /
@@ -34,6 +34,8 @@ import { writeConfigFile } from './config-file.js'
 import { denyUnexpectedPermissions } from './permissions.js'
 import { writeCrashReport } from './diagnostics.js'
 import { reportFatal } from './fatal-recovery.js'
+import { BackgroundNotice } from './background-notice.js'
+import { resolveThemeSource, themeBridgeScript } from './theme-bridge.js'
 import { captureWindowState, fitWindowState } from './window-state.js'
 import { resolveBindings, shortcutDeliveryMode, validateBindings } from './shortcuts.js'
 import { exitConfirmCopy, shouldConfirmExit } from './exit-guard.js'
@@ -164,6 +166,16 @@ let mainWindow = null
 const shellProtoState = { kernelOrigin: null }
 /** @type {ShellTray | null} */
 let tray = null
+/**
+ * The one-time "closing the window does not quit" notice.
+ *
+ * Built on first use rather than at module load: it needs `app.getPath`, which
+ * is only meaningful once the app is ready, and a window cannot be closed
+ * before that either.
+ *
+ * @type {BackgroundNotice | null}
+ */
+let trayNotice = null
 /** @type {{phase: string, stage?: string, attempts?: number, retryDelayMs?: number} | null} */
 let kernelState = null
 /**
@@ -1741,6 +1753,11 @@ function createWindow() {
     void webContents.executeJavaScript(OBSERVER_SOURCE, true).catch((error) => {
       console.error(`observer inject failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+    // The page decides its own theme; Electron's chrome has to follow it or the
+    // window frame and native menus disagree with the window's contents.
+    void webContents.executeJavaScript(themeBridgeScript(), true).catch((error) => {
+      console.error(`theme bridge inject failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
     // Preload self-check. DevTools reports a preload problem as
     // "Unable to load preload script" without saying whether the file was
     // missing, unreadable or threw while running, so read the mark the preload
@@ -1775,7 +1792,10 @@ function createWindow() {
     if (tray === null || tray.isQuitting) return
     if (!window.isVisible()) return
     event.preventDefault()
-    window.hide()
+    // Ask first, once. Closing the window looks like quitting but is not, and
+    // on Linux there is no dock to reveal afterwards — so a user with a task
+    // running would lose sight of it with no indication anything is left.
+    backgroundNotice().close(() => window.hide())
   })
 
   window.once('ready-to-show', () => window.show())
@@ -1801,6 +1821,34 @@ function showWindow() {
   mainWindow.show()
   mainWindow.focus()
   mainWindow.webContents.send('shell:shown')
+}
+
+/**
+ * The one-time tray notice, created on first use.
+ *
+ * @returns {BackgroundNotice}
+ */
+function backgroundNotice() {
+  if (trayNotice !== null) return trayNotice
+  trayNotice = new BackgroundNotice({
+    markerPath: join(app.getPath('userData'), 'tray-notice.acknowledged'),
+    show: async ({ message }) => {
+      const { response } = await dialog.showMessageBox({
+        type: 'info',
+        title: 'DeepSeek Harness',
+        message,
+        buttons: ['知道了'],
+        defaultId: 0,
+        // There is nothing to cancel out of: the dialog exists to explain, and
+        // the answer is the same either way, so it is not closable by dismissal.
+        cancelId: -1,
+        noLink: true,
+      })
+      return response
+    },
+    focus: () => showWindow(),
+  })
+  return trayNotice
 }
 
 /**
@@ -2016,6 +2064,15 @@ if (!app.requestSingleInstanceLock()) {
         const title = typeof payload?.title === 'string' ? payload.title : 'DeepSeek Harness'
         const body = typeof payload?.body === 'string' ? payload.body : ''
         tray.notify(title, body)
+      })
+
+      // The page's theme choice, so Electron's own chrome matches the window
+      // frame, native menus and tray rather than following the OS while the
+      // application follows the user.
+      ipcMain.on('shell:theme', (_event, payload) => {
+        // An unrecognised value resolves to `system` rather than to a guess:
+        // fighting the user's desktop setting is worse than following it.
+        nativeTheme.themeSource = resolveThemeSource(payload?.source)
       })
 
       // The preload reporting that it ran. DevTools says only "Unable to load
