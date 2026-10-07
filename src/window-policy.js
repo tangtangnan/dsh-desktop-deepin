@@ -62,12 +62,29 @@ export function kernelOrigin(host, port) {
 }
 
 /**
+ * The WebSocket endpoint the kernel serves on, alongside its HTTP origin.
+ *
+ * @param {string} host
+ * @param {number} port
+ * @returns {string}
+ */
+export function kernelWebSocketUrl(host, port) {
+  const authority = host.includes(':') ? `[${host}]` : host
+  return `ws://${authority}:${port}`
+}
+
+/**
  * Decides whether the window may navigate to `url`.
  *
  * Compared as an exact origin. The tempting shortcuts are all wrong in a way that only
  * shows up under attack: `startsWith('http://127.0.0.1:')` also matches port 8080 run by
  * some other program on this machine, and `includes('127.0.0.1')` matches
  * `http://evil.example/?redirect=127.0.0.1`.
+ *
+ * Scheme URLs (the shell's own `dsh-app://` pages and the `dsh-app://app/`
+ * kernel facade) are always allowed: they resolve to the shell's protocol
+ * handler, which routes them to the kernel's plain origin with the per-launch
+ * token attached.
  *
  * @param {string} url - the target URL, as reported by the navigation event
  * @param {string} allowedOrigin - the origin returned by {@link kernelOrigin}
@@ -76,6 +93,7 @@ export function kernelOrigin(host, port) {
 export function isAllowedNavigation(url, allowedOrigin) {
   const target = parse(url)
   if (target === null) return false
+  if (target.protocol === 'dsh-app:') return true
   return target.origin === allowedOrigin
 }
 

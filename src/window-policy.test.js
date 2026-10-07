@@ -5,6 +5,7 @@ import {
   isAllowedExternal,
   isAllowedNavigation,
   kernelOrigin,
+  kernelWebSocketUrl,
   SECURE_WEB_PREFERENCES,
 } from './window-policy.js'
 
@@ -22,10 +23,25 @@ describe('kernelOrigin', () => {
   })
 })
 
+describe('kernelWebSocketUrl', () => {
+  it('builds the ws:// sibling of the http origin', () => {
+    assert.equal(kernelWebSocketUrl('127.0.0.1', 41235), 'ws://127.0.0.1:41235')
+  })
+
+  it('brackets an IPv6 host', () => {
+    assert.equal(kernelWebSocketUrl('::1', 3080), 'ws://[::1]:3080')
+  })
+})
+
 describe('isAllowedNavigation', () => {
   it('allows the kernel origin and its paths', () => {
     assert.equal(isAllowedNavigation('http://127.0.0.1:41235/', ORIGIN), true)
     assert.equal(isAllowedNavigation('http://127.0.0.1:41235/session/1?x=2', ORIGIN), true)
+  })
+
+  it('allows the shell scheme on any path (routed by the protocol handler)', () => {
+    assert.equal(isAllowedNavigation('dsh-app://app/', ORIGIN), true)
+    assert.equal(isAllowedNavigation('dsh-app://shell/loading.html', ORIGIN), true)
   })
 
   it('rejects another port on this machine', () => {

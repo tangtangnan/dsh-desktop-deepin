@@ -17,16 +17,17 @@ import { makeHandler, SCHEME } from '../src/shell-protocol.js'
 
 /**
  * A tiny in-process server standing in for the kernel's web origin.
- * It requires an `Authorization: Bearer <token>` header and returns a JSON
- * payload otherwise; it also serves a static route under `/static/`.
+ * It requires the per-launch token as a `?token=` query parameter and returns
+ * a JSON payload otherwise; it also serves a static route under `/static/`.
  *
- * @returns {Promise<{ origin: string, close: () => Promise<void> }>}
+ * @returns {Promise<{ origin: string, token: string, close: () => Promise<void> }>}
  */
 async function startFakeKernel() {
   const TOKEN = 'e2e-token-' + Math.random().toString(36).slice(2)
   const server = createServer((req, res) => {
-    const auth = req.headers.authorization
-    if (!auth || auth !== `Bearer ${TOKEN}`) {
+    const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams
+    const token = query.get('token')
+    if (token !== TOKEN) {
       res.statusCode = 401
       res.end('unauthorized')
       return
@@ -36,8 +37,13 @@ async function startFakeKernel() {
       res.end('hello-from-kernel')
       return
     }
+    // Echo the request back minus the token the forwarder attached, so the
+    // test can assert on the path the kernel actually saw.
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    url.searchParams.delete('token')
+    const echoed = url.pathname + (url.search ? url.search : '')
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ token: TOKEN, path: req.url }))
+    res.end(JSON.stringify({ token: TOKEN, path: echoed }))
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${server.address().port}`
@@ -48,7 +54,7 @@ async function startFakeKernel() {
   }
 }
 
-test('makeHandler forwards dsh-app://app/... to the kernel with the Bearer token', async () => {
+test('makeHandler forwards dsh-app://app/... to the kernel with the ?token= query parameter', async () => {
   const fake = await startFakeKernel()
   const dir = await mkdtemp(join(tmpdir(), 'dsh-protocol-e2e-'))
   try {

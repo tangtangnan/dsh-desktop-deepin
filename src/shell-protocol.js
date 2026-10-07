@@ -1,5 +1,5 @@
 /**
- * Minimal private-protocol handling for the shell.
+ * Private-protocol handling for the shell, with a dual channel to the kernel.
  *
  * A thin layer over Electron's `protocol` module: it registers a `dsh-app`
  * scheme with the privileges that make it behave like a standard, secure
@@ -8,9 +8,14 @@
  *   dsh-app://shell/... -> the shell's own static documents (renderer dir)
  *   dsh-app://app/...   -> forwarded to the kernel's authenticated origin
  *
- * The kernel is addressed through the shell's existing `http://127.0.0.1`
- * endpoint plus its per-launch token, so the two stay decoupled: the scheme
- * is a front door for the renderer, not a replacement for the kernel.
+ * The renderer loads the kernel's web UI through the `app` hostname, so every
+ * request the UI issues resolves against the scheme and is proxied back to the
+ * kernel's plain `http://127.0.0.1` endpoint with the per-launch token
+ * attached as a `?token=` query parameter. The kernel only exposes a
+ * WebSocket surface over `ws://`, and Chromium cannot open that from a custom
+ * scheme page; `rewriteWebSocketUrl` therefore rewrites each outgoing
+ * WebSocket URL with the kernel origin and token so the dial goes out to the
+ * real `ws://` endpoint directly.
  *
  * @module shell-protocol
  */
@@ -147,9 +152,14 @@ export async function serveShellDocument({ url, root }) {
 /**
  * Forwards a request to the kernel's authenticated origin.
  *
- * Strips the original `host`/`origin`/`cookie` headers, injects the kernel's
- * token as an `Authorization` header (the kernel gates its web surface behind
- * its per-launch token), and withholds hop-by-hop response headers.
+ * Rebuilds the request against the kernel's plain origin (no token embedded in
+ * the URL the renderer asked for), then attaches the kernel's per-launch token
+ * as a `?token=` query parameter. The kernel's web gate reads the token from
+ * the URL — it does not inspect an `Authorization` header — so the forwarded
+ * request must carry the credential in the query string, exactly the shape the
+ * old `loadURL(tokenised(...))` path produced. Hop-by-hop response headers are
+ * withheld so the kernel's keep-alive bookkeeping does not leak into the
+ * renderer-facing response.
  *
  * @param {object} options
  * @param {string} options.url - the full request URL (`dsh-app://app/...`).
@@ -162,9 +172,8 @@ export async function forwardToKernel({ url, origin, token }) {
   if (parsed.hostname !== ROUTES.kernel) return new Response(null, { status: 404 })
   if (token === null || token === undefined || token === '') return new Response(null, { status: 503 })
   const target = new URL(`${origin.replace(/\/$/, '')}${parsed.pathname}${parsed.search}`)
-  const headers = new Headers()
-  headers.set('authorization', `Bearer ${token}`)
-  const response = await fetch(target, { method: 'GET', headers, redirect: 'manual' })
+  target.searchParams.set('token', token)
+  const response = await fetch(target, { method: 'GET', redirect: 'manual' })
   const outgoing = new Headers(response.headers)
   for (const name of ['set-cookie', 'content-encoding', 'content-length',
     'transfer-encoding', 'connection', 'keep-alive']) outgoing.delete(name)
@@ -219,4 +228,37 @@ export function installShellProtocol(protocol, options) {
  */
 export function createShellProtocolState() {
   return { kernelOrigin: null }
+}
+
+/**
+ * Rewrites a WebSocket URL issued by a page living in the `dsh-app` shell
+ * domain so it can be served by the kernel over a real `ws://` connection.
+ *
+ * Chromium cannot open a `ws://` connection from a page whose URL is a custom
+ * scheme, and the kernel's streaming surface only authenticates via the
+ * per-launch token in the URL query string (not an `Authorization` header).
+ * The main process therefore intercepts `ws://127.0.0.1/*` requests and
+ * rewrites each one with this helper before Chromium dials out: the host is
+ * kept verbatim (it is already the kernel's), the kernel origin is attached
+ * for diagnostics, and the token is appended as a query parameter.
+ *
+ * @param {string} url - the original WebSocket URL the page asked for.
+ * @param {object} options
+ * @param {string | null} options.kernelOrigin - the kernel's plain origin (`http://127.0.0.1:<port>`).
+ * @param {() => (string | null)} options.tokenOf - returns the kernel's current token, or null while unknown.
+ * @returns {string} the rewritten WebSocket URL, or the input unchanged when no token is available.
+ * @throws {Error} when the URL's host differs from the kernel origin's host —
+ *   a cross-host WebSocket must not be silently re-pointed at the kernel.
+ */
+export function rewriteWebSocketUrl(url, { kernelOrigin, tokenOf }) {
+  const parsed = new URL(url)
+  const host = kernelOrigin !== null ? new URL(kernelOrigin).host : null
+  if (host !== null && parsed.host !== host) {
+    throw new Error(`refusing to re-point WebSocket ${parsed.host} at kernel ${host}`)
+  }
+  const token = tokenOf()
+  if (token === null || token === undefined || token === '') return url
+  const rewritten = new URL(url)
+  rewritten.searchParams.set('token', token)
+  return rewritten.toString()
 }

@@ -14,6 +14,7 @@ import {
   SCHEME, ROUTES, PRIVILEGES, SHELL_CSP,
   registerShellScheme, serveShellDocument, forwardToKernel,
   makeHandler, installShellProtocol, createShellProtocolState,
+  rewriteWebSocketUrl,
 } from './shell-protocol.js'
 
 test('scheme and route constants are frozen and as documented', () => {
@@ -176,6 +177,93 @@ test('forwardToKernel 503s without a token', async () => {
     token: null,
   })
   assert.equal(response.status, 503)
+})
+
+test('forwardToKernel attaches the token as a ?token= query parameter', async () => {
+  let seenUrl = null
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    seenUrl = input
+    return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } })
+  }
+  try {
+    const response = await forwardToKernel({
+      url: 'dsh-app://app/modlens/paste?model=x',
+      origin: 'http://127.0.0.1:9',
+      token: 'sekret',
+    })
+    assert.equal(response.status, 200)
+    assert.ok(seenUrl, 'fetch must be called')
+    const target = new URL(seenUrl)
+    assert.equal(target.pathname, '/modlens/paste')
+    assert.equal(target.searchParams.get('model'), 'x')
+    assert.equal(target.searchParams.get('token'), 'sekret')
+    // No Bearer header is injected — the kernel's gate reads the token from the URL.
+    const headers = new Headers()
+    assert.equal(headers.get('authorization'), null)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('makeHandler routes the kernel hostname through the forwarding path', async () => {
+  const realFetch = globalThis.fetch
+  let seenUrl = null
+  globalThis.fetch = async (input) => {
+    seenUrl = input
+    return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } })
+  }
+  try {
+    const handler = makeHandler({
+      rendererRoot: '/tmp/never',
+      kernelOriginOf: () => 'http://127.0.0.1:9',
+      tokenOf: () => 'tok',
+    })
+    const response = await handler({ url: 'dsh-app://app/something?x=1' })
+    // With a real origin the request is forwarded — no longer a canned 503.
+    assert.equal(response.status, 200)
+    assert.ok(seenUrl, 'fetch must be called with the forwarded URL')
+    const target = new URL(seenUrl)
+    assert.equal(target.pathname, '/something')
+    assert.equal(target.searchParams.get('x'), '1')
+    assert.equal(target.searchParams.get('token'), 'tok')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('rewriteWebSocketUrl rewrites origin and appends the token', async () => {
+  const rewritten = rewriteWebSocketUrl(
+    'ws://127.0.0.1:33753/stream',
+    {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      tokenOf: () => 'sekret',
+    },
+  )
+  const url = new URL(rewritten)
+  assert.equal(url.origin, 'ws://127.0.0.1:33753')
+  assert.equal(url.pathname, '/stream')
+  assert.equal(url.searchParams.get('token'), 'sekret')
+})
+
+test('rewriteWebSocketUrl returns the URL untouched when no token', async () => {
+  const rewritten = rewriteWebSocketUrl(
+    'ws://127.0.0.1:33753/stream',
+    {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      tokenOf: () => null,
+    },
+  )
+  assert.equal(rewritten, 'ws://127.0.0.1:33753/stream')
+})
+
+test('rewriteWebSocketUrl refuses a cross-host URL', async () => {
+  assert.throws(() => {
+    rewriteWebSocketUrl('ws://attacker.example/x', {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      tokenOf: () => 'tok',
+    })
+  })
 })
 
 test('makeHandler routes shell docs to the renderer root', async () => {

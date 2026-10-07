@@ -52,7 +52,7 @@ import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
-import { installShellProtocol, registerShellScheme } from './shell-protocol.js'
+import { installShellProtocol, registerShellScheme, rewriteWebSocketUrl } from './shell-protocol.js'
 
 // Scheme URLs the static loading/error pages are served from.
 // The handler is installed in `whenReady` (before the first window), and the
@@ -60,6 +60,12 @@ import { installShellProtocol, registerShellScheme } from './shell-protocol.js'
 // without re-packaging the shell.
 const LOADING_URL = 'dsh-app://shell/loading.html'
 const ERROR_URL = 'dsh-app://shell/error.html'
+// The kernel's web UI is loaded through the scheme's `app` hostname: the
+// renderer lands on `dsh-app://app/`, and every request the UI issues
+// (including the WebSocket surface) is resolved against the scheme, then
+// proxied to the kernel's plain `http://127.0.0.1` endpoint with the
+// per-launch token attached as `?token=`.
+const APP_URL = 'dsh-app://app/'
 import {
   SECURE_WEB_PREFERENCES,
   classifyWindowOpen,
@@ -1178,10 +1184,10 @@ async function recoverRenderer(window, endpoint, times, setTimes) {
   // Read the endpoint at recovery time, not at handler-install time: the
   // window exists before the kernel does, so an origin captured when the
   // handler was attached would be null forever.
-  const { origin, token } = endpoint()
+  const { origin } = endpoint()
   if (origin === null) return
   try {
-    await window.loadURL(tokenised(`${origin}/`, token))
+    await window.loadURL(APP_URL)
   } catch (error) {
     console.error(`renderer recovery failed: ${error instanceof Error ? error.message : String(error)}`)
   }
@@ -1346,6 +1352,35 @@ function createWindow() {
   let token = null
 
   /**
+   * Installs the dual-channel WebSocket rewrite for this window.
+   *
+   * Chromium cannot open a `ws://` connection from a page whose URL is the
+   * shell's custom `dsh-app` scheme, but the kernel's streaming surface only
+   * speaks `ws://`. The main process intercepts each outgoing WebSocket URL,
+   * rewrites it against the kernel's plain origin with the per-launch token
+   * attached as a query parameter, and hands the result back to Chromium so
+   * the dial goes out to the real endpoint.
+   *
+   * @param {Electron.WebContents} webContents - the contents to attach to
+   * @returns {void}
+   */
+  const installWebSocketRewrite = (webContents) => {
+    webContents.session.webRequest.onBeforeRequest({ urls: ['ws://127.0.0.1/*'] }, (details, callback) => {
+      try {
+        const rewritten = rewriteWebSocketUrl(details.url, {
+          kernelOrigin: origin,
+          tokenOf: () => token,
+        })
+        if (rewritten !== details.url) callback({ redirectURL: rewritten })
+        else callback({})
+      } catch (error) {
+        console.error(`WebSocket rewrite refused: ${error instanceof Error ? error.message : String(error)}`)
+        callback({ cancel: true })
+      }
+    })
+  }
+
+  /**
    * Records the kernel endpoint once it is known, and points the window at it.
    *
    * @param {string} nextOrigin
@@ -1367,7 +1402,7 @@ function createWindow() {
     }
 
     if (window.isDestroyed()) return
-    void window.loadURL(tokenised(`${origin}/`, token))
+    void window.loadURL(APP_URL)
   }
 
   /**
@@ -1466,6 +1501,10 @@ function createWindow() {
 
   // A webview can carry its own webPreferences and would bypass every setting above.
   webContents.on('will-attach-webview', (event) => event.preventDefault())
+
+  // Dual-channel: let the kernel's `ws://127.0.0.1` streaming surface reach
+  // Chromium's dial-out even though the page lives under the `dsh-app` scheme.
+  installWebSocketRewrite(webContents)
 
   // Renderer self-healing: a crashed or failed-to-load renderer is reloaded
   // back onto the kernel URL a bounded number of times, so a transient
@@ -1619,7 +1658,7 @@ async function restartKernel() {
     // is what makes a user-initiated restart not count as a crash.
     supervisor.markReady(`${origin}/`)
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      void mainWindow.loadURL(tokenised(`${origin}/`, process_.webToken()))
+      void mainWindow.loadURL(APP_URL)
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
