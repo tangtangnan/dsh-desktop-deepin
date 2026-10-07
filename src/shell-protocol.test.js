@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  SCHEME, ROUTES, PRIVILEGES,
+  SCHEME, ROUTES, PRIVILEGES, SHELL_CSP,
   registerShellScheme, serveShellDocument, forwardToKernel,
   makeHandler, installShellProtocol, createShellProtocolState,
 } from './shell-protocol.js'
@@ -119,6 +119,34 @@ test('serveShellDocument 404s for a missing file', async () => {
   try {
     const response = await serveShellDocument({ url: 'dsh-app://shell/none.html', root: dir })
     assert.equal(response.status, 404)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('serveShellDocument gives .html documents the SHELL_CSP response header', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-protocol-'))
+  try {
+    await writeFile(join(dir, 'loading.html'), '<html>hi</html>', 'utf8')
+    const response = await serveShellDocument({ url: 'dsh-app://shell/loading.html', root: dir })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-security-policy'), SHELL_CSP)
+    // Policy must line up with what the page already declares in its <meta> tag.
+    assert.match(SHELL_CSP, /style-src 'unsafe-inline'/)
+    assert.match(SHELL_CSP, /script-src 'unsafe-inline'/)
+    assert.match(SHELL_CSP, /default-src 'none'/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('serveShellDocument gives non-document assets no CSP header', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-protocol-'))
+  try {
+    await writeFile(join(dir, 'a.js'), 'console.log(1)', 'utf8')
+    const response = await serveShellDocument({ url: 'dsh-app://shell/a.js', root: dir })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-security-policy'), null)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

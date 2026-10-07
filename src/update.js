@@ -14,7 +14,7 @@
  */
 
 import { app, dialog } from 'electron'
-import { getConfig } from './config.js'
+import { getConfig, isInstalledLaunch } from './config.js'
 
 /**
  * Checks for a newer release and notifies the user.
@@ -22,7 +22,10 @@ import { getConfig } from './config.js'
  * @returns {Promise<void>}
  */
 export async function checkForUpdatesAndNotify() {
-  if (!app.isPackaged) {
+  // `app.isPackaged` is false in the installed deb too (it runs `electron .`),
+  // so a source checkout is told apart by whether the launcher ran — see
+  // {@link module:config.isInstalledLaunch}.
+  if (!isInstalledLaunch()) {
     await dialog.showMessageBox({
       type: 'info',
       title: 'Check for updates',

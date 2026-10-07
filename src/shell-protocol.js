@@ -44,6 +44,18 @@ export const PRIVILEGES = Object.freeze({
 })
 
 /**
+ * Content-Security-Policy served with the shell's own documents.
+ *
+ * Mirrors the `<meta http-equiv>` in `renderer/loading.html` and
+ * `renderer/error.html` as a real response header: Electron's security warning
+ * reads headers, not meta tags. The pages are fully self-contained (inline
+ * style and inline script, no network), so nothing is loaded from anywhere.
+ *
+ * @type {string}
+ */
+export const SHELL_CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+
+/**
  * A minimal view of the Electron `protocol` module this module talks to.
  *
  * @typedef {object} ProtocolModule
@@ -118,9 +130,18 @@ export async function serveShellDocument({ url, root }) {
     if (code === 'EACCES' || code === 'EPERM') return new Response(null, { status: 403 })
     throw error
   }
-  return new Response(body, {
-    headers: { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' },
+  const headers = new Headers({
+    'content-type': MIME[extname(target)] ?? 'application/octet-stream',
   })
+  // A real CSP response header, not just the page's <meta http-equiv>. Electron's
+  // security warning inspects response headers, so without this the loading and
+  // error pages trip "This renderer process has no Content-Security-Policy"
+  // even though their markup declares the same policy. Only shell-owned
+  // documents get it — forwarded kernel responses keep the kernel's own headers.
+  if (extname(target) === '.html') {
+    headers.set('content-security-policy', SHELL_CSP)
+  }
+  return new Response(body, { headers })
 }
 
 /**

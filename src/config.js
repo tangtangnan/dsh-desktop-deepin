@@ -39,6 +39,29 @@ export const CONFIG_PATH = join(APP_ROOT, 'config.json')
 export const USER_CONFIG_DIR = join(homedir(), '.config', 'dsh-desktop')
 export const USER_CONFIG_PATH = join(USER_CONFIG_DIR, 'config.json')
 
+/**
+ * Whether this shell was started by the installed launcher rather than from a
+ * source checkout.
+ *
+ * `app.isPackaged` cannot answer that here: the deb runs a bare
+ * `electron .` over `/opt/deepseek-harness-desktop` (see `start-shell.sh`),
+ * so Electron's `process.defaultApp` stays true and `app.isPackaged` stays
+ * false in the very build users install. Anything gated on it — notably the
+ * "Check for updates" dialog — therefore shows its development message in
+ * production.
+ *
+ * The launcher exports `ELECTRON_USER_DATA` before exec'ing Electron
+ * (`start-shell.sh`), and `orphan-reaper.js` already treats that variable as
+ * the marker for a kernel this shell spawned. A source run
+ * (`npm start` -> `electron .`) never sets it, which makes it an exact
+ * stand-in for "installed".
+ *
+ * @returns {boolean} true when launched by the installed launcher.
+ */
+export function isInstalledLaunch() {
+  return process.env.ELECTRON_USER_DATA !== undefined && process.env.ELECTRON_USER_DATA !== ''
+}
+
 const DEFAULTS = {
   launcher: {
     electron: '',

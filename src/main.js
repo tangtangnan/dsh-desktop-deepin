@@ -20,7 +20,7 @@ import { KernelSupervisor } from './kernel-supervisor.js'
 // remain wired in `loadShellStaticPage` as a fallback when the scheme is not
 // yet installed (e.g. a hand-picked install layout missing `renderer/`).
 import { errorPageHtml, loadingPageHtml } from './loading-page.js'
-import { getConfig } from './config.js'
+import { getConfig, isInstalledLaunch } from './config.js'
 import { buildKernelArgs, buildKernelEnv, isSupportedNodeVersion } from './kernel-runtime.js'
 import { familyMarkerEnv, markerValueFor, reapOrphans } from './orphan-reaper.js'
 import { nodeBinaryName } from './node-runtime.js'
@@ -1645,7 +1645,10 @@ async function restartKernel() {
  * @returns {Promise<void>}
  */
 async function checkForUpdates() {
-  if (!app.isPackaged) {
+  // Not `app.isPackaged`: the installed deb also runs `electron .`, so that
+  // flag is false in production. The launcher's marker distinguishes a real
+  // install from a source run — see {@link module:config.isInstalledLaunch}.
+  if (!isInstalledLaunch()) {
     dialog.showMessageBox({
       type: 'info',
       title: 'Check for updates',

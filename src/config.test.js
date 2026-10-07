@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildConfig, resetConfigCache, getConfig } from './config.js'
+import { buildConfig, resetConfigCache, getConfig, isInstalledLaunch } from './config.js'
 
 test('buildConfig: defaults win when nothing is provided', () => {
   const cfg = buildConfig()
@@ -43,3 +43,46 @@ test('getConfig reads shipped + user files and caches', async () => {
   assert.equal(a, b, 'getConfig must return the cached object')
   assert.equal(typeof a.launcher.userDataDir, 'string')
 })
+
+test('isInstalledLaunch: true when the launcher exported its marker', () => {
+  const saved = process.env.ELECTRON_USER_DATA
+  try {
+    process.env.ELECTRON_USER_DATA = '/home/alice/.local/share/dsh-desktop/data-shell'
+    assert.equal(isInstalledLaunch(), true)
+  } finally {
+    restoreEnv('ELECTRON_USER_DATA', saved)
+  }
+})
+
+test('isInstalledLaunch: false for a source run (npm start -> electron .)', () => {
+  const saved = process.env.ELECTRON_USER_DATA
+  try {
+    delete process.env.ELECTRON_USER_DATA
+    assert.equal(isInstalledLaunch(), false)
+  } finally {
+    restoreEnv('ELECTRON_USER_DATA', saved)
+  }
+})
+
+test('isInstalledLaunch: empty marker counts as not installed', () => {
+  const saved = process.env.ELECTRON_USER_DATA
+  try {
+    process.env.ELECTRON_USER_DATA = ''
+    assert.equal(isInstalledLaunch(), false)
+  } finally {
+    restoreEnv('ELECTRON_USER_DATA', saved)
+  }
+})
+
+/**
+ * Restores an environment variable to its previous value, deleting it again if
+ * it was not set. Keeps these tests from leaking into whatever runs after them.
+ *
+ * @param {string} key
+ * @param {string | undefined} value
+ * @returns {void}
+ */
+function restoreEnv(key, value) {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
