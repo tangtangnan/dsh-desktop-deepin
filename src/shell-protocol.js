@@ -35,6 +35,35 @@ export const SCHEME = Object.freeze({ shell: 'dsh-app' })
 export const ROUTES = Object.freeze({ shellDocs: 'shell', kernel: 'app' })
 
 /**
+ * Request headers that describe a single hop and must never be replayed onto
+ * the next one. RFC 9110 §7.6.1 connection-scoped names, plus the ones Node's
+ * fetch refuses to let a caller set.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const HOP_BY_HOP = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailer', 'transfer-encoding', 'upgrade',
+])
+
+/**
+ * How many redirect hops a single forwarded request may follow.
+ *
+ * @type {number}
+ */
+const REDIRECT_LIMIT = 5
+
+/**
+ * Whether a status code is a redirect this layer should resolve itself.
+ *
+ * @param {number} status
+ * @returns {boolean}
+ */
+function isRedirect(status) {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
+}
+
+/**
  * Which privileges the scheme must carry to be usable as a standard origin.
  *
  * @type {Readonly<object>}
@@ -65,7 +94,7 @@ export const SHELL_CSP = "default-src 'none'; style-src 'unsafe-inline'; script-
  *
  * @typedef {object} ProtocolModule
  * @property {(list: { scheme: string, privileges: Record<string, boolean> }[]) => void} registerSchemesAsPrivileged
- * @property {(scheme: string, handler: (request: { url: string }) => Promise<Response>) => void} handle
+ * @property {(scheme: string, handler: (request: Request) => Promise<Response>) => void} handle
  */
 
 /**
@@ -157,27 +186,75 @@ export async function serveShellDocument({ url, root }) {
  * as a `?token=` query parameter. The kernel's web gate reads the token from
  * the URL — it does not inspect an `Authorization` header — so the forwarded
  * request must carry the credential in the query string, exactly the shape the
- * old `loadURL(tokenised(...))` path produced. Hop-by-hop response headers are
- * withheld so the kernel's keep-alive bookkeeping does not leak into the
- * renderer-facing response.
+ * old `loadURL(tokenised(...))` path produced.
+ *
+ * The request is otherwise passed through verbatim: method, headers and body
+ * all survive, because the kernel serves POST/PATCH API routes alongside plain
+ * documents and a hard-coded `GET` silently broke them.
+ *
+ * Redirects are resolved here rather than handed to the renderer. With
+ * `redirect: 'manual'` the kernel's 303 came back verbatim — an empty body
+ * behind a redirect status, which renders as a black window (observed live: 80
+ * such requests in a single session).
  *
  * @param {object} options
  * @param {string} options.url - the full request URL (`dsh-app://app/...`).
  * @param {string} options.origin - the kernel's origin (`http://127.0.0.1:<port>`).
  * @param {string | null} options.token - the kernel's per-launch token.
+ * @param {Request} [options.request] - the original request, for method/headers/body.
  * @returns {Promise<Response>}
  */
-export async function forwardToKernel({ url, origin, token }) {
+export async function forwardToKernel({ url, origin, token, request }) {
   const parsed = new URL(url)
   if (parsed.hostname !== ROUTES.kernel) return new Response(null, { status: 404 })
   if (token === null || token === undefined || token === '') return new Response(null, { status: 503 })
   const target = new URL(`${origin.replace(/\/$/, '')}${parsed.pathname}${parsed.search}`)
   target.searchParams.set('token', token)
-  const response = await fetch(target, { method: 'GET', redirect: 'manual' })
-  const outgoing = new Headers(response.headers)
-  for (const name of ['set-cookie', 'content-encoding', 'content-length',
-    'transfer-encoding', 'connection', 'keep-alive']) outgoing.delete(name)
-  return new Response(response.body, { status: response.status, headers: outgoing })
+
+  // Forward the caller's method and headers. Hop-by-hop and browser-managed
+  // headers are dropped: they describe the renderer-to-shell hop, not the
+  // shell-to-kernel one, and replaying `Origin: dsh-app://app` upstream would
+  // make the kernel's own origin check reject the request.
+  const headers = new Headers()
+  if (request !== undefined) {
+    request.headers.forEach((value, name) => {
+      const lower = name.toLowerCase()
+      if (HOP_BY_HOP.has(lower) || lower === 'host' || lower === 'origin' ||
+        lower === 'referer' || lower === 'cookie') return
+      headers.set(name, value)
+    })
+  }
+  const method = request?.method ?? 'GET'
+  const body = method === 'GET' || method === 'HEAD' ? undefined : request?.body
+  // undici refuses to stream a request body unless `duplex` is declared; the
+  // renderer hands us a ReadableStream, so this is required, not cosmetic.
+  // `duplex` and iterable `Headers` belong to Node's undici rather than to the
+  // DOM lib this file is otherwise typed against, hence the widened init type.
+  /** @type {RequestInit & { duplex?: 'half' }} */
+  const init = body === undefined
+    ? { method, headers, redirect: 'manual' }
+    : { method, headers, body, redirect: 'manual', duplex: 'half' }
+
+  // Redirects are followed by hand rather than by fetch, because the kernel's
+  // `Location` is a path (`/app/index.html`) that carries no query string —
+  // fetch would drop the `?token=` credential on the way and the kernel's gate
+  // would answer 401 to the very request we just authenticated.
+  let response = await fetch(target, init)
+  for (let hop = 0; hop < REDIRECT_LIMIT && isRedirect(response.status); hop += 1) {
+    const location = response.headers.get('location')
+    if (location === null) break
+    const next = new URL(location, target)
+    // The token is a property of the kernel launch, not of any one URL: it must
+    // survive every hop, and be re-applied in case a Location overwrites it.
+    next.searchParams.set('token', token)
+    // 303 (and 301/302) turn the follow-up into a GET; 307/308 must preserve
+    // the method and body.
+    const preservesMethod = response.status === 307 || response.status === 308
+    response = await fetch(next, preservesMethod
+      ? init
+      : { method: 'GET', headers, redirect: 'manual' })
+  }
+  return new Response(response.body, { status: response.status, headers: response.headers })
 }
 
 /**
@@ -187,7 +264,7 @@ export async function forwardToKernel({ url, origin, token }) {
  * @param {string} options.rendererRoot - the shell's renderer document directory.
  * @param {() => (string | null)} options.kernelOriginOf - returns the kernel's origin, or null while unknown.
  * @param {() => (string | null)} options.tokenOf - returns the kernel's current token.
- * @returns {(request: { url: string }) => Promise<Response>}
+ * @returns {(request: Request) => Promise<Response>}
  */
 export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf }) {
   return async (request) => {
@@ -198,7 +275,12 @@ export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf }) {
     if (parsed.hostname === ROUTES.kernel) {
       const kernelOrigin = kernelOriginOf()
       if (kernelOrigin === null) return new Response(null, { status: 503 })
-      return forwardToKernel({ url: request.url, origin: kernelOrigin, token: tokenOf() })
+      return forwardToKernel({
+        url: request.url,
+        origin: kernelOrigin,
+        token: tokenOf(),
+        request: typeof request.method === 'string' ? request : undefined,
+      })
     }
     return new Response(null, { status: 404 })
   }

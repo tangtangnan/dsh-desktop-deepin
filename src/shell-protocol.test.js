@@ -206,6 +206,126 @@ test('forwardToKernel attaches the token as a ?token= query parameter', async ()
   }
 })
 
+test('forwardToKernel resolves the kernel redirect itself instead of handing 303 to the renderer', async () => {
+  // A pass-through forward used to return the kernel's 303 verbatim. The
+  // renderer then received an empty body behind a redirect status, which
+  // paints a black window — observed live, 80 such requests in one session.
+  const realFetch = globalThis.fetch
+  /** @type {URL[]} */
+  const calls = []
+  globalThis.fetch = async (input) => {
+    calls.push(new URL(String(input)))
+    if (calls.length === 1) {
+      return new Response(null, { status: 303, headers: { location: '/app/index.html' } })
+    }
+    return new Response('<html>real page</html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    })
+  }
+  try {
+    const response = await forwardToKernel({
+      url: 'dsh-app://app/',
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+    })
+    assert.equal(response.status, 200)
+    assert.match(await response.text(), /real page/)
+    assert.equal(calls.length, 2, 'the redirect must be followed inside the main process')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('forwardToKernel re-attaches the token on every redirect hop', async () => {
+  // The kernel's `Location` is a bare path, so following it with fetch alone
+  // drops the `?token=` credential and the gate answers 401 to the very
+  // request that was just authenticated. Observed as a 401 in the e2e run.
+  const realFetch = globalThis.fetch
+  /** @type {URL[]} */
+  const calls = []
+  globalThis.fetch = async (input) => {
+    calls.push(new URL(String(input)))
+    if (calls.length === 1) {
+      return new Response(null, { status: 303, headers: { location: '/app/index.html' } })
+    }
+    return new Response('ok', { status: 200 })
+  }
+  try {
+    const response = await forwardToKernel({
+      url: 'dsh-app://app/',
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+    })
+    assert.equal(response.status, 200)
+    for (const call of calls) {
+      assert.equal(call.searchParams.get('token'), 'tok', `token lost on hop to ${call.pathname}`)
+    }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('forwardToKernel replays the method, body and content headers of the original request', async () => {
+  const realFetch = globalThis.fetch
+  /** @type {{ init: RequestInit, target: unknown }[]} */
+  const calls = []
+  globalThis.fetch = async (input, options) => {
+    calls.push({ init: options ?? {}, target: input })
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const original = new Request('dsh-app://app/api/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"a":1}',
+    })
+    await forwardToKernel({
+      url: original.url,
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+      request: original,
+    })
+    assert.equal(calls.length, 1, 'fetch must be called')
+    const call = calls[0]
+    assert.equal(call?.init.method, 'POST', 'the kernel API serves POST routes; a hard-coded GET broke them')
+    const sent = new Headers(call?.init.headers)
+    assert.equal(sent.get('content-type'), 'application/json')
+    // The token lives in the query string, never in a header.
+    assert.equal(sent.get('authorization'), null)
+    assert.equal(new URL(String(call?.target)).searchParams.get('token'), 'tok')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('forwardToKernel drops the renderer-side origin so the kernel origin check passes', async () => {
+  const realFetch = globalThis.fetch
+  /** @type {RequestInit[]} */
+  const inits = []
+  globalThis.fetch = async (_input, options) => {
+    inits.push(options ?? {})
+    return new Response('ok', { status: 200 })
+  }
+  try {
+    const original = new Request('dsh-app://app/x', {
+      headers: { origin: 'dsh-app://app', referer: 'dsh-app://app/', 'x-keep': 'yes' },
+    })
+    await forwardToKernel({
+      url: original.url,
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+      request: original,
+    })
+    const sent = new Headers(inits[0]?.headers)
+    assert.equal(sent.get('origin'), null, 'Origin describes the renderer hop, not the kernel hop')
+    assert.equal(sent.get('referer'), null)
+    assert.equal(sent.get('x-keep'), 'yes', 'application headers must survive')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 test('makeHandler routes the kernel hostname through the forwarding path', async () => {
   const realFetch = globalThis.fetch
   let seenUrl = null
@@ -219,7 +339,7 @@ test('makeHandler routes the kernel hostname through the forwarding path', async
       kernelOriginOf: () => 'http://127.0.0.1:9',
       tokenOf: () => 'tok',
     })
-    const response = await handler({ url: 'dsh-app://app/something?x=1' })
+    const response = await handler(new Request('dsh-app://app/something?x=1'))
     // With a real origin the request is forwarded — no longer a canned 503.
     assert.equal(response.status, 200)
     assert.ok(seenUrl, 'fetch must be called with the forwarded URL')
@@ -275,7 +395,7 @@ test('makeHandler routes shell docs to the renderer root', async () => {
       kernelOriginOf: () => 'http://127.0.0.1:9',
       tokenOf: () => null,
     })
-    const response = await handler({ url: 'dsh-app://shell/page.html' })
+    const response = await handler(new Request('dsh-app://shell/page.html'))
     assert.equal(response.status, 200)
     assert.equal(await response.text(), '<b>ok</b>')
   } finally {
@@ -289,7 +409,7 @@ test('makeHandler 503s the kernel route when the origin is unknown', async () =>
     kernelOriginOf: () => null,
     tokenOf: () => null,
   })
-  const response = await handler({ url: 'dsh-app://app/x' })
+  const response = await handler(new Request('dsh-app://app/x'))
   assert.equal(response.status, 503)
 })
 
@@ -299,7 +419,7 @@ test('makeHandler 404s unknown hostnames', async () => {
     kernelOriginOf: () => 'http://127.0.0.1:9',
     tokenOf: () => 'tok',
   })
-  const response = await handler({ url: 'dsh-app://nope/x' })
+  const response = await handler(new Request('dsh-app://nope/x'))
   assert.equal(response.status, 404)
 })
 
