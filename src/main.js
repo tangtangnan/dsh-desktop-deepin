@@ -22,6 +22,8 @@ import { KernelSupervisor } from './kernel-supervisor.js'
 import { errorPageHtml, loadingPageHtml } from './loading-page.js'
 import { getConfig, isInstalledLaunch } from './config.js'
 import { buildKernelArgs, buildKernelEnv, isSupportedNodeVersion } from './kernel-runtime.js'
+import { readLoginShellEnvironment, resolveLoginShellConfig } from './login-shell-environment.js'
+import { describeCommand, installCommand, uninstallCommand } from './cli-command.js'
 import { familyMarkerEnv, markerValueFor, reapOrphans } from './orphan-reaper.js'
 import { nodeBinaryName } from './node-runtime.js'
 import { httpProbe, waitForReady } from './readiness.js'
@@ -795,6 +797,51 @@ async function toggleSafeMode() {
 }
 
 /**
+ * What is published at the `dsh` command path, for the tray item.
+ *
+ * @returns {Promise<'ours' | 'foreign' | 'stale' | 'absent'>}
+ */
+async function readCommandState() {
+  try {
+    return (await describeCommand()).state
+  } catch (error) {
+    console.warn(`could not read the dsh command: ${error instanceof Error ? error.message : String(error)}`)
+    return 'absent'
+  }
+}
+
+/**
+ * Publishes or removes the `dsh` command, then reports what happened.
+ *
+ * The target is this shell's own launcher, not the kernel binary it currently
+ * supervises: the command should survive a kernel restart and a home switch,
+ * and it should keep working after this release is upgraded.
+ *
+ * @returns {Promise<void>}
+ */
+async function toggleCommand() {
+  const state = await readCommandState()
+  const result = state === 'ours'
+    ? await uninstallCommand()
+    : await installCommand({ target: process.execPath, args: [here, '--profile', 'web'] })
+  tray?.setCommandState(await readCommandState())
+  const detail = result.ok
+    ? state === 'ours'
+      ? '已从 PATH 移除'
+      : '已安装，新开的终端里可用'
+    : result.message
+  if (result.ok === false) console.warn(`dsh command: ${result.message}`)
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    void dialog.showMessageBox(mainWindow, {
+      type: result.ok ? 'info' : 'warning',
+      message: 'dsh 命令',
+      detail,
+      buttons: ['好'],
+    })
+  }
+}
+
+/**
  * Sends the current stage to the loading page, retrying until the page's script
  * is actually running.
  *
@@ -905,6 +952,35 @@ async function preferredPort(host) {
   // fixed port can be held by another dsh instance, and probing a stranger's
   // kernel is what produced the startup timeout.
   return findFreePort(host)
+}
+
+/**
+ * Reads the environment the kernel should launch under.
+ *
+ * A GUI launch on Linux and macOS inherits only what the session manager
+ * hands it, so everything the user's shell startup files export — `PATH`
+ * additions, proxy variables, package mirrors, locale — is missing. The kernel
+ * would then run in a different environment than the user's own terminal, and
+ * the symptom is tools that work in one place and not the other.
+ *
+ * Failure is never fatal. The probe runs arbitrary rc files; when none of the
+ * candidate shells produces an environment the inherited one is used and the
+ * reason is logged, because a shell that cannot be read must not stop the app
+ * from starting.
+ *
+ * @returns {Promise<NodeJS.ProcessEnv>} the environment for the kernel
+ */
+async function readLaunchEnvironment() {
+  if (process.platform === 'win32') return { ...process.env }
+  const timeoutMs = resolveLoginShellConfig(process.env)
+  const { environment, failures } = await readLoginShellEnvironment(process.env, timeoutMs)
+  if (failures.length > 0) {
+    const detail = failures.map((failure) => `${failure.shell} (${failure.reason})`).join(', ')
+    // Every candidate failing is worth a line; some shells are simply absent,
+    // so only the first shell's absence is unremarkable.
+    console.warn(`login-shell environment unavailable, using the inherited environment: ${detail}`)
+  }
+  return { ...environment }
 }
 
 /**
@@ -1023,6 +1099,15 @@ async function startKernel() {
   // state callback below is what the loading page and the tray read. Each
   // attempt takes a fresh port, because the port the last one died on may
   // still be in TIME_WAIT.
+  //
+  // The environment the kernel launches under is read once, before the first
+  // attempt: a GUI launch on Linux and macOS inherits only the session
+  // manager's variables, so `PATH` additions, proxy settings and mirrors from
+  // the user's shell startup files are missing — the kernel would then run in a
+  // different environment than the user's terminal. Retries reuse the same
+  // read: the answer cannot change mid-launch, and an rc file that hangs would
+  // otherwise be able to stall every attempt.
+  const launchEnv = await readLaunchEnvironment()
   const supervisor = new KernelSupervisor({
     onState: (state) => {
       // Keep the latest state where both the tray and a late-coming window can
@@ -1046,7 +1131,7 @@ async function startKernel() {
       // is implemented as "change the variable, restart the kernel", and every
       // attempt — including the retries the supervisor makes on its own — has
       // to use whichever home is current at that moment.
-      const kernelEnv = buildKernelEnv({ parentEnv: process.env, dshHome, runElectronAsNode })
+      const kernelEnv = buildKernelEnv({ parentEnv: launchEnv, dshHome, runElectronAsNode })
       return {
         nodePath,
         args: buildKernelArgs({ binPath, port, patchFiles }),
@@ -1950,6 +2035,8 @@ if (!app.requestSingleInstanceLock()) {
         onCheckUpdates: () => void checkForUpdates(),
         onToggleLaunchAtLogin: () => toggleLaunchAtLogin(),
         onToggleSafeMode: () => void toggleSafeMode(),
+        commandState: await readCommandState(),
+        onToggleCommand: () => void toggleCommand(),
         safeMode,
         launchAtLogin: app.getLoginItemSettings().openAtLogin,
         homes: describeHomes(homeRegistry),
