@@ -1,0 +1,45 @@
+name: 流水线连通性探针
+
+# 用途：确认 AtomGit 代码化流水线是否已开通、runner 环境是否满足 deb 打包要求。
+# 探针跑通后即可上正式打包工作流；若始终不触发，说明白名单未开。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    name: 环境探针
+    runs-on: default
+    steps:
+      - name: 探针
+        run: |
+          echo "════════ 流水线已触发 ════════"
+          echo "触发事件: ${ATOMGIT_EVENT_NAME:-未知}"
+          echo "分支/Ref: ${ATOMGIT_REF:-未知}"
+          echo "SHA: ${ATOMGIT_SHA:-未知}"
+          echo ""
+          echo "════════ runner 环境 ════════"
+          . /etc/os-release && echo "系统: $PRETTY_NAME"
+          echo "架构: $(uname -m)"
+          echo "内核: $(uname -r)"
+          echo ""
+          echo "════════ deb 打包依赖 ════════"
+          if command -v dpkg-deb >/dev/null 2>&1; then
+            echo "dpkg-deb: 有 ($(dpkg-deb --version | head -1))"
+          else
+            echo "dpkg-deb: ✖ 缺失 —— 无法打 deb"
+          fi
+          if command -v node >/dev/null 2>&1; then
+            echo "node: $(node -v)"
+          else
+            echo "node: ✖ 缺失"
+          fi
+          command -v npm >/dev/null 2>&1 && echo "npm: $(npm -v)" || echo "npm: ✖ 缺失"
+          command -v git >/dev/null 2>&1 && echo "git: $(git --version)" || echo "git: ✖ 缺失"
+          echo ""
+          echo "════════ 工作区 ════════"
+          pwd
+          ls -1 | head -20
+          echo ""
+          echo "✅ 探针结束"
