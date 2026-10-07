@@ -403,6 +403,43 @@ export function kernelTicket(state) {
 }
 
 /**
+ * Exchanges the kernel's launch token for its browser ticket.
+ *
+ * One `GET /?token=…` answers `303 Location: ./` with the authority-bound
+ * signed cookie that authenticates everything afterwards — including the
+ * WebSocket endpoint, which rejects the token outright. Done here rather than
+ * as a by-product of forwarding the renderer's first document, because the
+ * renderer's socket may open before that document resolves.
+ *
+ * Mirrors the official shell's `authenticateWebHost`.
+ *
+ * @param {string} origin - the kernel's origin (`http://127.0.0.1:<port>`).
+ * @param {string | null} token - the per-launch token from the kernel's output.
+ * @returns {Promise<CookieJar | null>} the ticket as name→value pairs, or null
+ *   when the kernel refused the exchange.
+ */
+export async function authenticateWebHost(origin, token) {
+  if (token === null || token === undefined || token === '') return null
+  const target = new URL(origin.replace(/\/$/, ''))
+  target.searchParams.set('token', token)
+  let response
+  try {
+    response = await fetch(target, { redirect: 'manual' })
+  } catch {
+    return null
+  }
+  await response.body?.cancel()
+  const cookie = response.headers.get('set-cookie')
+  // The kernel signals a successful exchange with 303 plus the cookie; anything
+  // else means the token was refused, and there is no ticket to present.
+  if (response.status !== 303 || cookie === null) return null
+  const pair = (cookie.split(';', 1)[0] ?? '').trim()
+  const eq = pair.indexOf('=')
+  if (eq <= 0) return null
+  return new Map([[pair.slice(0, eq), pair.slice(eq + 1)]])
+}
+
+/**
  * Rewrites the request headers of a WebSocket dial issued by a page living in
  * the `dsh-app` shell domain, so the kernel accepts it.
  *

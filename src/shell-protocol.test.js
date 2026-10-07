@@ -14,6 +14,7 @@ import {
   SCHEME, ROUTES, PRIVILEGES, SHELL_CSP,
   registerShellScheme, serveShellDocument, forwardToKernel,
   makeHandler, installShellProtocol, createShellProtocolState,
+  authenticateWebHost,
   kernelTicket,
   rewriteWebSocketHeaders,
 } from './shell-protocol.js'
@@ -443,4 +444,35 @@ test('kernelTicket renders the collected jar as a Cookie header value', async ()
   assert.equal(kernelTicket(state), null, 'no ticket before the entry handshake')
   state.tickets = new Map([['dsh-auth-abc', 'v1'], ['other', 'v2']])
   assert.equal(kernelTicket(state), 'dsh-auth-abc=v1; other=v2')
+})
+
+test('authenticateWebHost exchanges the launch token for the kernel ticket', async () => {
+  const realFetch = globalThis.fetch
+  let requested = null
+  globalThis.fetch = async (input) => {
+    requested = new URL(String(input))
+    return new Response(null, {
+      status: 303,
+      headers: { 'set-cookie': 'dsh-auth-abc=v1.sig; Path=/; HttpOnly; SameSite=Strict' },
+    })
+  }
+  try {
+    const jar = await authenticateWebHost('http://127.0.0.1:33753', 'sekret')
+    assert.equal(requested?.searchParams.get('token'), 'sekret')
+    // Attributes are dropped; only name=value reaches the Cookie header.
+    assert.deepEqual([...(jar ?? [])], [['dsh-auth-abc', 'v1.sig']])
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('authenticateWebHost reports no ticket when the kernel refuses the token', async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('unauthorized', { status: 401 })
+  try {
+    assert.equal(await authenticateWebHost('http://127.0.0.1:33753', 'wrong'), null)
+    assert.equal(await authenticateWebHost('http://127.0.0.1:33753', null), null)
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })

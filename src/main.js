@@ -52,7 +52,7 @@ import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
-import { installShellProtocol, kernelTicket, registerShellScheme, rewriteWebSocketHeaders, ROUTES as SCHEME_ROUTES, SCHEME } from './shell-protocol.js'
+import { authenticateWebHost, installShellProtocol, kernelTicket, registerShellScheme, rewriteWebSocketHeaders, ROUTES as SCHEME_ROUTES, SCHEME } from './shell-protocol.js'
 
 // Scheme URLs the static loading/error pages are served from.
 // The handler is installed in `whenReady` (before the first window), and the
@@ -1797,6 +1797,16 @@ if (!app.requestSingleInstanceLock()) {
       // Publish the kernel endpoint to the protocol handler so the
       // `dsh-app://app/` route can forward once the kernel is up.
       setShellKernelOrigin(origin)
+      // Claim the kernel's browser ticket up front, exactly as the official
+      // shell does (`authenticateWebHost`): one `GET /?token=…` whose `303`
+      // response carries the signed cookie. The WebSocket endpoint
+      // authenticates by that cookie and nothing else — the launch token is
+      // not accepted there — so it must be in hand before the renderer opens
+      // its first socket, not collected as a side effect of whatever document
+      // request happens to arrive first.
+      const ticket = await authenticateWebHost(origin, token)
+      if (ticket === null) console.warn('kernel ticket unavailable; WebSocket dials will not authenticate')
+      else shellProtoState.tickets = new Map(ticket)
 
       // The IPC channel from the locked-down preload. The renderer can only
       // call `shell.notify`; everything else in the kernel web UI has no
