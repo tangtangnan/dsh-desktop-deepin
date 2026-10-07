@@ -92,26 +92,32 @@ test('makeHandler 401s when the kernel token does not match', async () => {
 })
 
 test('makeHandler follows the kernel 303 so the renderer gets the document, not an empty redirect', async () => {
-  // Regression guard for the live black-window failure: the kernel redirects
-  // its document requests, and a forwarding layer that passes the 303 through
-  // hands the renderer an empty body, which renders as nothing at all.
+  // Regression guard for the live black-window failure. Modelled on the real
+  // kernel: the entry request (which carries `?token=`) is answered with
+  // `303 → ./` plus a fresh ticket, and only a request presenting that ticket
+  // gets the document. The token must not be repeated on the follow-up — the
+  // kernel reads that as a new unauthenticated visit and loops forever.
   const TOKEN = 'e2e-redirect-' + Math.random().toString(36).slice(2)
+  const TICKET = 'dsh-auth-redirect'
   let hits = 0
   const server = createServer((req, res) => {
     hits += 1
     const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams
-    if (query.get('token') !== TOKEN) {
+    const authenticated = query.get('token') === TOKEN ||
+      (req.headers.cookie ?? '').includes(TICKET)
+    if (!authenticated) {
       res.statusCode = 401
-      res.end('unauthorized')
+      res.end('dsh web authentication required')
       return
     }
-    if (req.url?.startsWith('/app/index.html')) {
+    if ((req.headers.cookie ?? '').includes(TICKET)) {
       res.setHeader('content-type', 'text/html')
       res.end('<html>index-after-redirect</html>')
       return
     }
     res.statusCode = 303
-    res.setHeader('location', '/app/index.html')
+    res.setHeader('location', './')
+    res.setHeader('set-cookie', `${TICKET}=v1; Path=/; HttpOnly; SameSite=Strict`)
     res.end()
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -127,6 +133,11 @@ test('makeHandler follows the kernel 303 so the renderer gets the document, not 
     assert.equal(response.status, 200, 'the redirect must be resolved inside the main process')
     assert.match(await response.text(), /index-after-redirect/)
     assert.ok(hits >= 2, 'the server must have seen both the redirect and its target')
+
+    // The ticket survives the handshake, so a later asset request is authorised
+    // without the token — `dsh-app://app/` is its own origin and cannot hold it.
+    const later = await handler(new Request('dsh-app://app/assets/app.js'))
+    assert.equal(later.status, 200, 'the held ticket must authorise follow-up requests')
   } finally {
     await new Promise((resolve) => server.close(() => resolve()))
     await rm(dir, { recursive: true, force: true })
@@ -192,6 +203,61 @@ test('makeHandler serves static shell documents alongside the kernel', async () 
     assert.match(response.headers.get('content-type') ?? '', /text\/html/)
   } finally {
     await fake.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('makeHandler keeps the ticket across requests and replaces it when refreshed', async () => {
+  // `dsh-app://app/` is a separate origin with its own cookie store, so the
+  // renderer cannot hold the kernel's ticket — the shell has to. Every 303
+  // mints a fresh ticket under the same name, so the jar must replace rather
+  // than accumulate, and a later request must present the newest one.
+  const TOKEN = 'e2e-ticket-' + Math.random().toString(36).slice(2)
+  const TICKET = 'dsh-auth-ticket'
+  /** @type {string[]} */
+  const presented = []
+  let minted = 0
+  const server = createServer((req, res) => {
+    const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams
+    const cookie = req.headers.cookie ?? ''
+    if (cookie.includes(TICKET)) presented.push(cookie)
+    const authorised = query.get('token') === TOKEN || cookie.includes(`${TICKET}=v`)
+    if (!authorised) {
+      res.statusCode = 401
+      res.end('dsh web authentication required')
+      return
+    }
+    if (!cookie.includes(TICKET)) {
+      minted += 1
+      res.statusCode = 303
+      res.setHeader('location', './')
+      res.setHeader('set-cookie', `${TICKET}=v${minted}; Path=/; HttpOnly`)
+      res.end()
+      return
+    }
+    res.setHeader('content-type', 'text/html')
+    res.end('<html>ok</html>')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const origin = `http://127.0.0.1:${server.address().port}`
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-protocol-e2e-'))
+  try {
+    const handler = makeHandler({
+      rendererRoot: dir,
+      kernelOriginOf: () => origin,
+      tokenOf: () => TOKEN,
+    })
+    assert.equal((await handler(new Request('dsh-app://app/'))).status, 200)
+    // The renderer sends no cookie of its own; the shell's jar is what
+    // authorises this one.
+    assert.equal((await handler(new Request('dsh-app://app/assets/x.js'))).status, 200)
+    assert.ok(presented.length >= 1, 'the shell must present the ticket it collected')
+    for (const cookie of presented) {
+      assert.match(cookie, /dsh-auth-ticket=v\d+/, 'exactly one, current ticket must be sent')
+      assert.doesNotMatch(cookie, /v\d+.*v\d+/, 'a stale ticket must never be sent alongside a fresh one')
+    }
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()))
     await rm(dir, { recursive: true, force: true })
   }
 })

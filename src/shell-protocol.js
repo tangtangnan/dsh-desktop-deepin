@@ -35,6 +35,12 @@ export const SCHEME = Object.freeze({ shell: 'dsh-app' })
 export const ROUTES = Object.freeze({ shellDocs: 'shell', kernel: 'app' })
 
 /**
+ * Authorisation tickets the kernel handed out, keyed by cookie name.
+ *
+ * @typedef {Map<string, string>} CookieJar
+ */
+
+/**
  * Request headers that describe a single hop and must never be replayed onto
  * the next one. RFC 9110 §7.6.1 connection-scoped names, plus the ones Node's
  * fetch refuses to let a caller set.
@@ -190,39 +196,59 @@ export async function serveShellDocument({ url, root }) {
  *
  * The request is otherwise passed through verbatim: method, headers and body
  * all survive, because the kernel serves POST/PATCH API routes alongside plain
- * documents and a hard-coded `GET` silently broke them.
+ * documents and a hard-coded `GET` silently broke them. Cookies included — the
+ * kernel's authorisation ticket arrives as `Set-Cookie` and must be replayed.
  *
- * Redirects are resolved here rather than handed to the renderer. With
- * `redirect: 'manual'` the kernel's 303 came back verbatim — an empty body
- * behind a redirect status, which renders as a black window (observed live: 80
- * such requests in a single session).
+ * Redirects are resolved here rather than handed to the renderer, because the
+ * kernel's entry handshake is a 303 whose ticket-bearing cookie has to survive
+ * the hop. Passing the 303 through gave the renderer an empty body behind a
+ * redirect status — a black window — and dropping the cookie turned the
+ * handshake into an endless `303 → ./` (observed live: 80 such requests).
  *
  * @param {object} options
  * @param {string} options.url - the full request URL (`dsh-app://app/...`).
  * @param {string} options.origin - the kernel's origin (`http://127.0.0.1:<port>`).
  * @param {string | null} options.token - the kernel's per-launch token.
  * @param {Request} [options.request] - the original request, for method/headers/body.
+ * @param {CookieJar} [options.jar] - tickets collected during redirect hops.
  * @returns {Promise<Response>}
  */
-export async function forwardToKernel({ url, origin, token, request }) {
+export async function forwardToKernel({ url, origin, token, request, jar }) {
   const parsed = new URL(url)
   if (parsed.hostname !== ROUTES.kernel) return new Response(null, { status: 404 })
   if (token === null || token === undefined || token === '') return new Response(null, { status: 503 })
   const target = new URL(`${origin.replace(/\/$/, '')}${parsed.pathname}${parsed.search}`)
-  target.searchParams.set('token', token)
 
-  // Forward the caller's method and headers. Hop-by-hop and browser-managed
-  // headers are dropped: they describe the renderer-to-shell hop, not the
-  // shell-to-kernel one, and replaying `Origin: dsh-app://app` upstream would
+  // The token belongs on the entry request only. Once a ticket is in hand the
+  // cookie is the credential, and re-sending `?token=` makes the kernel treat
+  // the request as a fresh unauthenticated visit — it answers `303 → ./` and
+  // the chain never terminates (observed live: an endless 303 loop).
+  const tickets = jar ?? new Map()
+  if (tickets.size === 0) target.searchParams.set('token', token)
+
+  // Forward the caller's method and headers. Hop-by-hop and the browser-managed
+  // `Origin`/`Referer` are dropped: they describe the renderer-to-shell hop, not
+  // the shell-to-kernel one, and replaying `Origin: dsh-app://app` upstream would
   // make the kernel's own origin check reject the request.
+  //
+  // `Cookie` is deliberately kept. The kernel answers the first document
+  // request with `303 → ./` plus a `set-cookie` holding its authorisation
+  // ticket; every later request must present it. Stripping cookies — or never
+  // sending the ticket the shell collected — leaves the kernel answering
+  // `303 → ./` forever, which is the black window reported live.
   const headers = new Headers()
   if (request !== undefined) {
     request.headers.forEach((value, name) => {
       const lower = name.toLowerCase()
       if (HOP_BY_HOP.has(lower) || lower === 'host' || lower === 'origin' ||
-        lower === 'referer' || lower === 'cookie') return
+        lower === 'referer') return
       headers.set(name, value)
     })
+  }
+  // The shell holds the ticket on the renderer's behalf, so restore it here
+  // before anything else touches `headers`.
+  if (tickets.size > 0) {
+    headers.set('cookie', [...tickets].map(([name, value]) => `${name}=${value}`).join('; '))
   }
   const method = request?.method ?? 'GET'
   const body = method === 'GET' || method === 'HEAD' ? undefined : request?.body
@@ -235,24 +261,49 @@ export async function forwardToKernel({ url, origin, token, request }) {
     ? { method, headers, redirect: 'manual' }
     : { method, headers, body, redirect: 'manual', duplex: 'half' }
 
-  // Redirects are followed by hand rather than by fetch, because the kernel's
-  // `Location` is a path (`/app/index.html`) that carries no query string —
-  // fetch would drop the `?token=` credential on the way and the kernel's gate
-  // would answer 401 to the very request we just authenticated.
+  // Redirects are followed here rather than by fetch, for two reasons.
+  //
+  // Redirects are resolved here rather than handed to the renderer, because the
+  // kernel's entry handshake is a 303 whose ticket-bearing cookie has to
+  // survive the hop:
+  //
+  //   GET /?token=… → 303 Location: ./ + Set-Cookie: dsh-auth-…
+  //   GET /         → 200 <the real document>
+  //
+  // Passing that 303 through hands the renderer an empty body behind a redirect
+  // status — a black window — so the hop is resolved here and the ticket is
+  // carried into `jar`, which outlives the request: `dsh-app://app/` is its own
+  // origin with its own cookie store, so the shell has to hold the ticket on
+  // the renderer's behalf or every follow-up asset comes back 401.
   let response = await fetch(target, init)
+  // Cookies the kernel hands out mid-chain, replayed on the following hop.
+  // The renderer would normally store these itself and re-request, but the
+  // document has to arrive with the very response the navigation is waiting
+  // for — so the handshake is carried to the end here.
+  //
+  // Keyed by cookie name, not appended: every 303 mints a *fresh* ticket for
+  // the same name, and sending the stale one alongside (or instead of) the new
+  // one leaves the kernel issuing 303s forever. A real cookie jar replaces on
+  // write, so this does too.
   for (let hop = 0; hop < REDIRECT_LIMIT && isRedirect(response.status); hop += 1) {
     const location = response.headers.get('location')
     if (location === null) break
     const next = new URL(location, target)
-    // The token is a property of the kernel launch, not of any one URL: it must
-    // survive every hop, and be re-applied in case a Location overwrites it.
-    next.searchParams.set('token', token)
+    for (const raw of response.headers.getSetCookie()) {
+      const pair = (raw.split(';', 1)[0] ?? '').trim()
+      const eq = pair.indexOf('=')
+      if (eq > 0) tickets.set(pair.slice(0, eq), pair.slice(eq + 1))
+    }
+    const hopHeaders = new Headers(headers)
+    if (tickets.size > 0) {
+      hopHeaders.set('cookie', [...tickets].map(([name, value]) => `${name}=${value}`).join('; '))
+    }
     // 303 (and 301/302) turn the follow-up into a GET; 307/308 must preserve
     // the method and body.
     const preservesMethod = response.status === 307 || response.status === 308
     response = await fetch(next, preservesMethod
-      ? init
-      : { method: 'GET', headers, redirect: 'manual' })
+      ? { ...init, headers: hopHeaders }
+      : { method: 'GET', headers: hopHeaders, redirect: 'manual' })
   }
   return new Response(response.body, { status: response.status, headers: response.headers })
 }
@@ -267,6 +318,12 @@ export async function forwardToKernel({ url, origin, token, request }) {
  * @returns {(request: Request) => Promise<Response>}
  */
 export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf }) {
+  // The kernel authorises a browser session with a cookie handed out during the
+  // entry handshake. `dsh-app://app/` is a separate origin with a separate
+  // cookie store, so the renderer cannot hold that ticket — the shell keeps it
+  // here for the lifetime of the handler and replays it on every request.
+  /** @type {Map<string, string>} */
+  const jar = new Map()
   return async (request) => {
     const parsed = new URL(request.url)
     if (parsed.hostname === ROUTES.shellDocs) {
@@ -280,6 +337,7 @@ export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf }) {
         origin: kernelOrigin,
         token: tokenOf(),
         request: typeof request.method === 'string' ? request : undefined,
+        jar,
       })
     }
     return new Response(null, { status: 404 })

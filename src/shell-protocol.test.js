@@ -216,7 +216,10 @@ test('forwardToKernel resolves the kernel redirect itself instead of handing 303
   globalThis.fetch = async (input) => {
     calls.push(new URL(String(input)))
     if (calls.length === 1) {
-      return new Response(null, { status: 303, headers: { location: '/app/index.html' } })
+      return new Response(null, {
+        status: 303,
+        headers: { location: './', 'set-cookie': 'dsh-auth-ticket=v1; Path=/; HttpOnly' },
+      })
     }
     return new Response('<html>real page</html>', {
       status: 200,
@@ -237,30 +240,65 @@ test('forwardToKernel resolves the kernel redirect itself instead of handing 303
   }
 })
 
-test('forwardToKernel re-attaches the token on every redirect hop', async () => {
-  // The kernel's `Location` is a bare path, so following it with fetch alone
-  // drops the `?token=` credential and the gate answers 401 to the very
-  // request that was just authenticated. Observed as a 401 in the e2e run.
+test('forwardToKernel drops the token once a ticket is held and sends the cookie instead', async () => {
+  // Every 303 mints a *fresh* ticket for the same cookie name, and the kernel
+  // treats a request that carries both `?token=` and no ticket as a fresh
+  // unauthenticated visit — so re-sending the token on every hop answered 303
+  // forever. The token belongs on the entry request only.
   const realFetch = globalThis.fetch
   /** @type {URL[]} */
   const calls = []
   globalThis.fetch = async (input) => {
     calls.push(new URL(String(input)))
     if (calls.length === 1) {
-      return new Response(null, { status: 303, headers: { location: '/app/index.html' } })
+      return new Response(null, {
+        status: 303,
+        headers: { location: './', 'set-cookie': 'dsh-auth-ticket=v1; Path=/; HttpOnly' },
+      })
     }
     return new Response('ok', { status: 200 })
   }
+  /** @type {Map<string, string>} */
+  const jar = new Map()
   try {
     const response = await forwardToKernel({
       url: 'dsh-app://app/',
       origin: 'http://127.0.0.1:9',
       token: 'tok',
+      jar,
     })
     assert.equal(response.status, 200)
-    for (const call of calls) {
-      assert.equal(call.searchParams.get('token'), 'tok', `token lost on hop to ${call.pathname}`)
-    }
+    assert.equal(calls.length, 2, 'the redirect must be followed inside the main process')
+    assert.equal(calls[0]?.searchParams.get('token'), 'tok', 'the entry request carries the token')
+    assert.equal(calls[1]?.searchParams.get('token'), null,
+      'the follow-up must NOT re-send the token or the kernel loops forever')
+    assert.equal(jar.get('dsh-auth-ticket'), 'v1', 'the ticket must be kept for later requests')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('forwardToKernel presents the held ticket instead of the token on later requests', async () => {
+  const realFetch = globalThis.fetch
+  /** @type {Array<{ url: URL, cookie: string | null }>} */
+  const calls = []
+  globalThis.fetch = async (input, options) => {
+    calls.push({ url: new URL(String(input)), cookie: new Headers(options?.headers).get('cookie') })
+    return new Response('ok', { status: 200 })
+  }
+  try {
+    /** @type {Map<string, string>} */
+    const jar = new Map([['dsh-auth-ticket', 'v1']])
+    await forwardToKernel({
+      url: 'dsh-app://app/api/status',
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+      jar,
+    })
+    assert.equal(calls[0]?.url.searchParams.get('token'), null,
+      'with a ticket in hand the token is not needed')
+    assert.equal(calls[0]?.cookie, 'dsh-auth-ticket=v1',
+      'the shell holds the ticket on the renderer’s behalf and must send it')
   } finally {
     globalThis.fetch = realFetch
   }
