@@ -1515,27 +1515,48 @@ function createWindow() {
   // copy out of a transcript. The menu is built from the edit state Chromium
   // reports rather than a fixed template, so items appear only where they
   // would actually do something.
+  //
+  // Labels are given explicitly because a bare `role` takes its text from
+  // Electron's own translations, which have no Chinese — the rest of this
+  // shell's menus are Chinese for the same reason (`app-menu.js`). The role
+  // still does the work; only the wording is ours.
+  /** @type {Readonly<Record<string, string>>} */
+  const EDIT_LABELS = Object.freeze({
+    undo: '撤销',
+    redo: '重做',
+    cut: '剪切',
+    copy: '复制',
+    paste: '粘贴',
+    selectAll: '全选',
+  })
   webContents.on('context-menu', (_event, { isEditable, selectionText, editFlags }) => {
     /** @type {Electron.MenuItemConstructorOptions[]} */
     const items = []
+    /**
+     * @param {NonNullable<Electron.MenuItemConstructorOptions['role']>} role
+     *   the native edit role to render
+     * @param {boolean} enabled - whether Chromium reports the action possible
+     * @returns {Electron.MenuItemConstructorOptions}
+     */
+    const item = (role, enabled) => ({ role, label: EDIT_LABELS[role], enabled })
     if (isEditable) {
       items.push(
-        { role: 'undo', enabled: editFlags.canUndo },
-        { role: 'redo', enabled: editFlags.canRedo },
+        item('undo', editFlags.canUndo),
+        item('redo', editFlags.canRedo),
         { type: 'separator' },
-        { role: 'cut', enabled: editFlags.canCut },
-        { role: 'copy', enabled: editFlags.canCopy },
-        { role: 'paste', enabled: editFlags.canPaste },
+        item('cut', editFlags.canCut),
+        item('copy', editFlags.canCopy),
+        item('paste', editFlags.canPaste),
         { type: 'separator' },
-        { role: 'selectAll', enabled: editFlags.canSelectAll },
+        item('selectAll', editFlags.canSelectAll),
       )
     } else if (selectionText.length > 0) {
-      items.push({ role: 'copy', enabled: editFlags.canCopy })
+      items.push(item('copy', editFlags.canCopy))
     }
     // An empty accelerator suppresses the default shortcut label Electron
     // would otherwise print next to each native role (`Ctrl+C`, `⌘C`).
     if (items.length === 0) return
-    Menu.buildFromTemplate(items.map((item) => ({ ...item, accelerator: '' }))).popup({ window })
+    Menu.buildFromTemplate(items.map((entry) => ({ ...entry, accelerator: '' }))).popup({ window })
   })
 
   webContents.on('will-navigate', (event, url) => {
