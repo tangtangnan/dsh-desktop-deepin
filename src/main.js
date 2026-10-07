@@ -33,6 +33,7 @@ import { buildShellPatch, serialisePatch } from './shell-patch.js'
 import { writeConfigFile } from './config-file.js'
 import { denyUnexpectedPermissions } from './permissions.js'
 import { writeCrashReport } from './diagnostics.js'
+import { reportFatal } from './fatal-recovery.js'
 import { captureWindowState, fitWindowState } from './window-state.js'
 import { resolveBindings, shortcutDeliveryMode, validateBindings } from './shortcuts.js'
 import { exitConfirmCopy, shouldConfirmExit } from './exit-guard.js'
@@ -1168,13 +1169,55 @@ async function startKernel() {
     // The kernel is gone for good; nothing supervises its servants any more.
     currentKernelPid = null
     void sweepOrphans('gave-up')
-    void writeCrashReport({
-      userData: app.getPath('userData'),
+
+    // The in-window error page explains but offers nothing, and by this point
+    // the window is showing that page because the app has nothing better to
+    // render. A native dialog carries the same report plus a way forward — and
+    // a port collision, the failure a user can actually do something about, is
+    // called out separately so they do not go hunting for a broken plugin.
+    void reportFatal({
+      error: new Error('内核反复退出，已停止自动重启', {
+        cause: new Error(tail(process_.logText(), 25)),
+      }),
       source: 'host',
-      appVersion: app.getVersion(),
-      message: 'kernel gave up after repeated exits',
-      output: process_.logText(),
-    }).catch(() => undefined)
+      writeReport: () =>
+        writeCrashReport({
+          userData: app.getPath('userData'),
+          source: 'host',
+          appVersion: app.getVersion(),
+          message: 'kernel gave up after repeated exits',
+          output: process_.logText(),
+        }),
+      show: async ({ detail, buttons }) => {
+        const { response } = await dialog.showMessageBox({
+          type: 'error',
+          title: 'DeepSeek Harness 启动失败',
+          message: 'DeepSeek Harness 启动失败',
+          detail,
+          buttons,
+          defaultId: 1,
+          cancelId: 0,
+          noLink: true,
+        })
+        return response
+      },
+      stop: async () => {
+        await supervisor.stop().catch(() => undefined)
+      },
+      disablePlugins: async () => {
+        // The next launch starts without third-party bundles. Setting the flag
+        // is what `restartKernel` reads, so the relaunch below picks it up.
+        safeMode = true
+        tray?.setSafeMode(true)
+      },
+      exit: () => {
+        app.exit(1)
+      },
+      restart: () => {
+        app.relaunch()
+        app.exit(0)
+      },
+    })
 
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
       void loadErrorPage(mainWindow, '内核启动失败，未能就绪。', tail(process_.logText(), 25))
