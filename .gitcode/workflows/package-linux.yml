@@ -222,3 +222,14 @@ jobs:
           RELEASE_BODY: |
             Linux deb（amd64 + arm64）。由 AtomGit Actions 自动构建并发布。
         run: node tools/atomgit-release.mjs
+
+      - name: Sync debs to Gitee release
+        # Gitee 同步由 AtomGit 侧发起：runner 在国内，访问 gitee.com 是普通请求，
+        # 不再需要 GitHub 那种「超时放宽到 300 秒 + 重试五次」的跨境兜底。
+        # 需在 项目设置 -> 密钥与变量 -> 仓库密钥 配置 GITEE_TOKEN（勾 projects 权限）；
+        # 未配置时脚本会打印警告并 exit 0，不影响 AtomGit Release。
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPOSITORY: westanke/dsh-desktop-deepin
+          RELEASE_DIR: release
+        run: node tools/sync-gitee-release.mjs
