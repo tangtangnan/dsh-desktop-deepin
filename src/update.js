@@ -126,11 +126,18 @@ export async function checkForUpdatesAndNotify() {
   autoUpdater.on('checking-for-update', () => {
     emit(updateState({ phase: 'checking' }))
   })
+  // The event payloads are typed by `electron-updater`, which is an optional
+  // dependency: absent from devDependencies by design (see the import above), so
+  // its types are unavailable here and each payload is annotated from what the
+  // updater documents it to carry. Without these the parameters widen to `any`
+  // on a machine that has the package and fail type checking on one that does
+  // not — the same code, two verdicts.
+  //
   // `ProgressInfo` carries bytes rather than a version, so the download events
   // can only name what `update-available` announced.
   /** @type {string | undefined} */
   let targetVersion
-  autoUpdater.on('update-available', (info) => {
+  autoUpdater.on('update-available', (/** @type {{version?: string}} */ info) => {
     targetVersion = typeof info?.version === 'string' ? info.version : undefined
     emit(updateState({ phase: 'available', version: targetVersion }))
   })
@@ -138,10 +145,10 @@ export async function checkForUpdatesAndNotify() {
     targetVersion = undefined
     emit(updateState({ phase: 'idle' }))
   })
-  autoUpdater.on('download-progress', (progress) => {
+  autoUpdater.on('download-progress', (/** @type {{percent?: number}} */ progress) => {
     emit(downloadState(progress?.percent ?? 0, targetVersion ?? ''))
   })
-  autoUpdater.on('update-downloaded', (info) => {
+  autoUpdater.on('update-downloaded', (/** @type {{version?: string}} */ info) => {
     emit(updateState({
       phase: 'ready',
       version: typeof info?.version === 'string' ? info.version : targetVersion,
