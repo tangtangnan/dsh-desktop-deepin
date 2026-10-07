@@ -1439,8 +1439,17 @@ function createWindow() {
       // Absolute path required by Electron — a relative preload silently fails
       // to attach (and the renderer is then unable to call `shell.notify`).
       // `here` is the directory of this `main.js` script, so the same path
-      // works in dev (`src/preload.js`) and in the packaged app (asar:src/preload.js).
-      preload: join(here, 'preload.js'),
+      // works in dev (`src/preload.cjs`) and in the packaged app.
+      //
+      // The `.cjs` extension is load-bearing, not cosmetic: `package.json`
+      // declares `"type": "module"`, which makes every `.js` under this
+      // directory an ES Module. A sandboxed preload must be CommonJS — it runs
+      // with no Node module loader and reads `contextBridge` / `ipcRenderer`
+      // off Electron's injected globals. Loaded as ESM those globals never
+      // materialise, so the preload dies with `contextBridge is not defined`
+      // and the renderer loses every bridge method (observed as a black
+      // window). Naming it `.cjs` opts it out of the ESM interpretation.
+      preload: join(here, 'preload.cjs'),
     },
   })
 
@@ -1456,9 +1465,9 @@ function createWindow() {
   // Ctrl+Shift+I work in packaged builds without advertising the entry.
   installApplicationMenu(window)
 
-  // The preload (`src/preload.js`) is the only piece of shell-side code the
+  // The preload (`src/preload.cjs`) is the only piece of shell-side code the
   // renderer can call into. Its surface is locked to `notify` and `onShown` —
-  // see `src/preload.js` for the rationale.
+  // see `src/preload.cjs` for the rationale.
 
   const { webContents } = window
 

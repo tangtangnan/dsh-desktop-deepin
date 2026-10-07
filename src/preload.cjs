@@ -22,6 +22,12 @@
  * (`contextBridge`, `ipcRenderer`, `webFrame`) as plain globals in the preload
  * scope, and this file uses them directly.
  *
+ * The `.cjs` extension is what makes that work. `package.json` declares
+ * `"type": "module"`, so a sibling `preload.js` would be handed to the ESM
+ * loader — where Electron's injected globals are not in scope, and this file
+ * dies on `ReferenceError: contextBridge is not defined`, leaving the renderer
+ * with no bridge at all. `.cjs` forces the CommonJS path regardless.
+ *
  * @module preload
  */
 
