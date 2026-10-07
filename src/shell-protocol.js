@@ -315,15 +315,20 @@ export async function forwardToKernel({ url, origin, token, request, jar }) {
  * @param {string} options.rendererRoot - the shell's renderer document directory.
  * @param {() => (string | null)} options.kernelOriginOf - returns the kernel's origin, or null while unknown.
  * @param {() => (string | null)} options.tokenOf - returns the kernel's current token.
+ * @param {ShellProtocolState} [options.state] - receives the collected ticket, so a
+ *   WebSocket hook can present it (see {@link rewriteWebSocketHeaders}).
  * @returns {(request: Request) => Promise<Response>}
  */
-export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf }) {
+export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf, state }) {
   // The kernel authorises a browser session with a cookie handed out during the
   // entry handshake. `dsh-app://app/` is a separate origin with a separate
   // cookie store, so the renderer cannot hold that ticket — the shell keeps it
-  // here for the lifetime of the handler and replays it on every request.
+  // here for the lifetime of the handler and replays it on every request. The
+  // kernel's WebSocket endpoint authenticates by that same ticket, so it is
+  // published on `state` for the header hook to read.
   /** @type {Map<string, string>} */
   const jar = new Map()
+  if (state !== undefined) state.tickets = jar
   return async (request) => {
     const parsed = new URL(request.url)
     if (parsed.hostname === ROUTES.shellDocs) {
@@ -352,6 +357,7 @@ export function makeHandler({ rendererRoot, kernelOriginOf, tokenOf }) {
  * @param {string} options.rendererRoot
  * @param {() => (string | null)} options.kernelOriginOf
  * @param {() => (string | null)} options.tokenOf
+ * @param {ShellProtocolState} [options.state] - receives the collected ticket.
  * @returns {void}
  */
 export function installShellProtocol(protocol, options) {
@@ -364,75 +370,70 @@ export function installShellProtocol(protocol, options) {
  * The handler closes over this so it picks up the live origin without being
  * reinstalled.
  *
- * @returns {{kernelOrigin: string | null}}
+ /**
+ * A state bag the main process mutates as the kernel endpoint comes and goes.
+ *
+ * The handler closes over this so it picks up the live origin without being
+ * reinstalled, and writes the kernel's browser ticket onto it so the WebSocket
+ * header hook can present the same credential.
+ *
+ * @typedef {object} ShellProtocolState
+ * @property {string | null} kernelOrigin
+ * @property {CookieJar} [tickets]
+ */
+
+/**
+ * @returns {ShellProtocolState}
  */
 export function createShellProtocolState() {
   return { kernelOrigin: null }
 }
 
 /**
- * Rewrites a WebSocket URL issued by a page living in the `dsh-app` shell
- * domain so it can be served by the kernel over a real `ws://` connection.
+ * The kernel's browser ticket as a `Cookie` header value, or null before the
+ * entry handshake has completed.
  *
- * Chromium cannot open a `ws://` connection from a page whose URL is a custom
- * scheme, and the kernel's streaming surface only authenticates via the
- * per-launch token in the URL query string (not an `Authorization` header).
- * The main process therefore intercepts `ws://127.0.0.1/*` requests and
- * rewrites each one with this helper before Chromium dials out: the host is
- * kept verbatim (it is already the kernel's), the kernel origin is attached
- * for diagnostics, and the token is appended as a query parameter.
- *
- * @param {string} url - the original WebSocket URL the page asked for.
- * @param {object} options
- * @param {string | null} options.kernelOrigin - the kernel's plain origin (`http://127.0.0.1:<port>`).
- * @param {() => (string | null)} options.tokenOf - returns the kernel's current token, or null while unknown.
- * @returns {string} the rewritten WebSocket URL, or the input unchanged when no token is available.
- * @throws {Error} when the URL's host differs from the kernel origin's host —
- *   a cross-host WebSocket must not be silently re-pointed at the kernel.
+ * @param {ShellProtocolState} state
+ * @returns {string | null}
  */
+export function kernelTicket(state) {
+  const jar = state.tickets
+  if (jar === undefined || jar.size === 0) return null
+  return [...jar].map(([name, value]) => `${name}=${value}`).join('; ')
+}
+
 /**
- * Re-points a WebSocket URL at the kernel, carrying the per-launch token.
+ * Rewrites the request headers of a WebSocket dial issued by a page living in
+ * the `dsh-app` shell domain, so the kernel accepts it.
  *
- * The renderer lives under `dsh-app://app/`, and the kernel's frontend builds
- * its socket URL from the page's own host — so it dials `ws://app/…`, a host
- * that resolves nowhere. Chromium cannot dial `ws://` out of a custom-scheme
- * page at all, so the main process intercepts the attempt and re-points it at
- * the kernel's plain origin with the ticket attached.
+ * The URL is deliberately left alone. The kernel's frontend builds its socket
+ * address from `document.baseURI` (`dsh-api-gateway` `remoteStreamUrl()`), so
+ * from `dsh-app://app/` it dials `ws://app/…` and the scheme layer is what turns
+ * that into a real connection. What the kernel rejects is the *headers*: its
+ * `Connection.admit()` demands both `isTrustedApiRequest()` (a recognised
+ * origin) and `BrowserAuth.isAuthenticated()` — an authority-bound signed
+ * cookie, the same ticket the entry handshake handed out. The launch token is
+ * not accepted here; it only ever mints that cookie.
  *
- * Two shapes are accepted, and only these two:
- *   - the kernel's own `127.0.0.1:<port>` host, when the frontend already
- *     addressed it directly;
- *   - `app`, the shell scheme's own hostname, which is what a page served from
- *     `dsh-app://app/` actually produces.
+ * So the rewrite mirrors the request rather than moving it: same-origin
+ * `Origin`, the kernel's `Sec-Fetch-Site`, and the ticket as `Cookie`.
  *
- * Anything else is refused rather than silently redirected: this hook sits on
- * a request filter, and quietly aiming a third party's socket at the kernel
- * would be a far worse failure than the one it is fixing.
- *
- * @param {string} url - the attempted socket URL.
+ * @param {Record<string, string>} headers - the outgoing headers, lower-cased.
  * @param {object} options
- * @param {string | null} options.kernelOrigin - the kernel's origin.
- * @param {() => (string | null)} options.tokenOf - returns the kernel's token.
- * @returns {string} the rewritten URL, or `url` unchanged when there is no token.
+ * @param {string | null} options.kernelOrigin - the kernel's plain origin.
+ * @param {() => (string | null)} options.ticketOf - returns the kernel's browser cookie, or null.
+ * @returns {Record<string, string>} the headers to send, or the input unchanged
+ *   when the ticket is not available yet.
  */
-export function rewriteWebSocketUrl(url, { kernelOrigin, tokenOf }) {
-  const parsed = new URL(url)
-  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
-    throw new Error(`refusing to re-point non-WebSocket URL ${url}`)
+export function rewriteWebSocketHeaders(headers, { kernelOrigin, ticketOf }) {
+  if (headers.origin !== `${SCHEME.shell}://${ROUTES.kernel}`) return headers
+  if (kernelOrigin === null || kernelOrigin === undefined) return headers
+  const ticket = ticketOf()
+  if (ticket === null || ticket === undefined || ticket === '') return headers
+  return {
+    ...headers,
+    origin: kernelOrigin,
+    cookie: ticket,
+    'sec-fetch-site': 'same-origin',
   }
-  const kernelHost = kernelOrigin !== null && kernelOrigin !== undefined
-    ? new URL(kernelOrigin).host
-    : null
-  const isKernelHost = kernelHost !== null && parsed.host === kernelHost
-  const isShellHost = parsed.host === ROUTES.kernel
-  if (!isKernelHost && !isShellHost) {
-    throw new Error(`refusing to re-point WebSocket ${parsed.host} at kernel ${String(kernelHost)}`)
-  }
-  if (!isShellHost) return url
-  const token = tokenOf()
-  if (token === null || token === undefined || token === '') return url
-  const rewritten = new URL(url)
-  if (kernelHost !== null) rewritten.host = kernelHost
-  rewritten.searchParams.set('token', token)
-  return rewritten.toString()
 }

@@ -52,7 +52,7 @@ import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
-import { installShellProtocol, registerShellScheme, rewriteWebSocketUrl, ROUTES as SCHEME_ROUTES } from './shell-protocol.js'
+import { installShellProtocol, kernelTicket, registerShellScheme, rewriteWebSocketHeaders, ROUTES as SCHEME_ROUTES, SCHEME } from './shell-protocol.js'
 
 // Scheme URLs the static loading/error pages are served from.
 // The handler is installed in `whenReady` (before the first window), and the
@@ -150,6 +150,15 @@ let systemKernelMode = false
 let startupBeganAt = 0
 /** @type {BrowserWindow | null} */
 let mainWindow = null
+/**
+ * Live state shared by the `dsh-app` protocol handler and the WebSocket header
+ * hook: the kernel's plain origin, and the browser ticket its entry handshake
+ * hands out. Both live out here because each window reads them while the
+ * startup path writes them.
+ *
+ * @type {import('./shell-protocol.js').ShellProtocolState}
+ */
+const shellProtoState = { kernelOrigin: null }
 /** @type {ShellTray | null} */
 let tray = null
 /** @type {{phase: string, stage?: string, attempts?: number, retryDelayMs?: number} | null} */
@@ -1352,36 +1361,43 @@ function createWindow() {
   let token = null
 
   /**
-   * Installs the dual-channel WebSocket rewrite for this window.
+   * Presents the kernel's browser ticket on WebSocket dials from this window.
    *
-   * Chromium cannot open a `ws://` connection from a page whose URL is the
-   * shell's custom `dsh-app` scheme, and the kernel's frontend builds its
-   * socket URL from the page's own host — so from `dsh-app://app/` it dials
-   * `ws://app/…`, a host that resolves nowhere. The main process intercepts
-   * the attempt and re-points it at the kernel's plain origin with the
-   * per-launch token attached.
-   *
-   * Both shapes are filtered: the kernel host itself (a frontend that already
-   * addressed it directly) and the `app` scheme hostname (what this window
-   * actually produces). Anything else is left alone.
+   * The kernel's frontend builds its socket address from `document.baseURI`, so
+   * from `dsh-app://app/` it dials `ws://app/…` and the `dsh-app` scheme layer
+   * is what turns that into a real connection — the URL stays as-is. What the
+   * kernel refuses is the request's headers: its `Connection.admit()` requires
+   * a recognised origin and an authority-bound signed cookie, the same ticket
+   * the entry handshake handed out. The launch token is not accepted there; it
+   * only ever mints that cookie.
    *
    * @param {Electron.WebContents} webContents - the contents to attach to
    * @returns {void}
    */
   const installWebSocketRewrite = (webContents) => {
-    const filter = { urls: ['ws://127.0.0.1/*', `ws://${SCHEME_ROUTES.kernel}/*`] }
-    webContents.session.webRequest.onBeforeRequest(filter, (details, callback) => {
-      try {
-        const rewritten = rewriteWebSocketUrl(details.url, {
-          kernelOrigin: origin,
-          tokenOf: () => token,
-        })
-        if (rewritten !== details.url) callback({ redirectURL: rewritten })
-        else callback({})
-      } catch (error) {
-        console.error(`WebSocket rewrite refused: ${error instanceof Error ? error.message : String(error)}`)
-        callback({ cancel: true })
+    webContents.session.webRequest.onBeforeSendHeaders({ urls: ['ws://*/*'] }, (details, callback) => {
+      // Only this window's own sockets are the kernel's to authenticate; a guest
+      // page's WebSocket is none of the shell's business.
+      if (webContents.id !== details.webContentsId || origin === null) {
+        callback({})
+        return
       }
+      const headers = Object.fromEntries(
+        Object.entries(details.requestHeaders).map(([name, value]) => [name.toLowerCase(), value]),
+      )
+      if (headers.origin !== `${SCHEME.shell}://${SCHEME_ROUTES.kernel}`) {
+        callback({})
+        return
+      }
+      const rewritten = rewriteWebSocketHeaders(headers, {
+        kernelOrigin: origin,
+        ticketOf: () => kernelTicket(shellProtoState),
+      })
+      if (rewritten === headers) {
+        callback({})
+        return
+      }
+      callback({ requestHeaders: rewritten })
     })
   }
 
@@ -1752,8 +1768,6 @@ if (!app.requestSingleInstanceLock()) {
       // `dsh-app://app/...` to reach the kernel's authenticated origin. The
       // handler reads live state through the closure, so it picks up the
       // endpoint the moment `setKernel` records it.
-      /** @type {{ kernelOrigin: string | null }} */
-      const shellProtoState = { kernelOrigin: null }
       installShellProtocol(protocol, {
         rendererRoot: join(here, '..', 'renderer'),
         kernelOriginOf: () => shellProtoState.kernelOrigin,
@@ -1761,6 +1775,7 @@ if (!app.requestSingleInstanceLock()) {
           const proc = kernel?.current
           return proc?.webToken?.() ?? null
         },
+        state: shellProtoState,
       })
       /** @param {string | null} origin */
       const setShellKernelOrigin = (origin) => { shellProtoState.kernelOrigin = origin }

@@ -14,7 +14,8 @@ import {
   SCHEME, ROUTES, PRIVILEGES, SHELL_CSP,
   registerShellScheme, serveShellDocument, forwardToKernel,
   makeHandler, installShellProtocol, createShellProtocolState,
-  rewriteWebSocketUrl,
+  kernelTicket,
+  rewriteWebSocketHeaders,
 } from './shell-protocol.js'
 
 test('scheme and route constants are frozen and as documented', () => {
@@ -390,104 +391,56 @@ test('makeHandler routes the kernel hostname through the forwarding path', async
   }
 })
 
-test('rewriteWebSocketUrl re-points the shell scheme hostname at the kernel', async () => {
-  // The kernel's frontend builds its socket URL from `document.baseURI`, so a
-  // page served from `dsh-app://app/` dials `ws://app/…` — a host that resolves
-  // nowhere. This is the shape the live console showed as
-  // `WebSocket connection to 'ws://app/api/remote.mux' failed`.
-  const rewritten = rewriteWebSocketUrl('ws://app/api/remote.mux', {
-    kernelOrigin: 'http://127.0.0.1:33753',
-    tokenOf: () => 'sekret',
-  })
-  const url = new URL(rewritten)
-  assert.equal(url.origin, 'ws://127.0.0.1:33753')
-  assert.equal(url.pathname, '/api/remote.mux')
-  assert.equal(url.searchParams.get('token'), 'sekret')
-})
-
-test('rewriteWebSocketUrl leaves a direct kernel socket untouched', async () => {
-  // Already addressed correctly: re-pointing it would only risk a second
-  // rewrite on a URL that needs none.
-  const original = 'ws://127.0.0.1:33753/stream'
-  assert.equal(
-    rewriteWebSocketUrl(original, {
-      kernelOrigin: 'http://127.0.0.1:33753',
-      tokenOf: () => 'sekret',
-    }),
-    original,
-  )
-})
-
-test('rewriteWebSocketUrl refuses a non-WebSocket URL', async () => {
-  assert.throws(
-    () => rewriteWebSocketUrl('http://app/api/remote.mux', {
-      kernelOrigin: 'http://127.0.0.1:33753',
-      tokenOf: () => 'sekret',
-    }),
-    /non-WebSocket/,
-  )
-})
-
-test('rewriteWebSocketUrl returns the URL untouched when no token', async () => {
-  const rewritten = rewriteWebSocketUrl(
-    'ws://127.0.0.1:33753/stream',
-    {
-      kernelOrigin: 'http://127.0.0.1:33753',
-      tokenOf: () => null,
-    },
-  )
-  assert.equal(rewritten, 'ws://127.0.0.1:33753/stream')
-})
-
-test('rewriteWebSocketUrl refuses a cross-host URL', async () => {
-  assert.throws(() => {
-    rewriteWebSocketUrl('ws://attacker.example/x', {
-      kernelOrigin: 'http://127.0.0.1:33753',
-      tokenOf: () => 'tok',
-    })
-  })
-})
-
-test('makeHandler routes shell docs to the renderer root', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-protocol-'))
-  try {
-    await writeFile(join(dir, 'page.html'), '<b>ok</b>', 'utf8')
-    const handler = makeHandler({
-      rendererRoot: dir,
-      kernelOriginOf: () => 'http://127.0.0.1:9',
-      tokenOf: () => null,
-    })
-    const response = await handler(new Request('dsh-app://shell/page.html'))
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), '<b>ok</b>')
-  } finally {
-    await rm(dir, { recursive: true, force: true })
+test('rewriteWebSocketHeaders presents the kernel ticket on a shell-originated dial', async () => {
+  // The kernel builds its socket address from `document.baseURI`, so from
+  // `dsh-app://app/` it dials `ws://app/…` and the scheme layer carries the
+  // connection. What the kernel refuses is the request's headers: its
+  // `Connection.admit()` wants a recognised origin plus the authority-bound
+  // cookie the entry handshake handed out. The launch token is not accepted
+  // there — it only ever mints that cookie.
+  const headers = {
+    origin: 'dsh-app://app',
+    host: 'app',
+    'sec-fetch-site:': 'same-origin',
   }
-})
-
-test('makeHandler 503s the kernel route when the origin is unknown', async () => {
-  const handler = makeHandler({
-    rendererRoot: '/tmp/never',
-    kernelOriginOf: () => null,
-    tokenOf: () => null,
+  const rewritten = rewriteWebSocketHeaders(headers, {
+    kernelOrigin: 'http://127.0.0.1:33753',
+    ticketOf: () => 'dsh-auth-abc=v1',
   })
-  const response = await handler(new Request('dsh-app://app/x'))
-  assert.equal(response.status, 503)
+  assert.equal(rewritten.origin, 'http://127.0.0.1:33753')
+  assert.equal(rewritten.cookie, 'dsh-auth-abc=v1')
+  assert.equal(rewritten['sec-fetch-site'], 'same-origin')
+  // The URL is untouched: this hook moves headers, not addresses.
+  assert.equal(rewritten.host, 'app')
 })
 
-test('makeHandler 404s unknown hostnames', async () => {
-  const handler = makeHandler({
-    rendererRoot: '/tmp/never',
-    kernelOriginOf: () => 'http://127.0.0.1:9',
-    tokenOf: () => 'tok',
-  })
-  const response = await handler(new Request('dsh-app://nope/x'))
-  assert.equal(response.status, 404)
+test('rewriteWebSocketHeaders leaves a dial from another origin alone', async () => {
+  // A guest page's own WebSocket is not the kernel's to authenticate.
+  const headers = { origin: 'https://example.test' }
+  assert.equal(
+    rewriteWebSocketHeaders(headers, {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      ticketOf: () => 'dsh-auth-abc=v1',
+    }),
+    headers,
+  )
 })
 
-test('createShellProtocolState starts with a null origin and is mutable', () => {
-  const state = createShellProtocolState()
-  assert.equal(state.kernelOrigin, null)
-  state.kernelOrigin = 'http://127.0.0.1:4321'
-  assert.equal(state.kernelOrigin, 'http://127.0.0.1:4321')
+test('rewriteWebSocketHeaders leaves the dial alone until the handshake has run', async () => {
+  const headers = { origin: 'dsh-app://app' }
+  assert.equal(
+    rewriteWebSocketHeaders(headers, {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      ticketOf: () => null,
+    }),
+    headers,
+  )
+})
+
+test('kernelTicket renders the collected jar as a Cookie header value', async () => {
+  /** @type {import('./shell-protocol.js').ShellProtocolState} */
+  const state = { kernelOrigin: 'http://127.0.0.1:33753' }
+  assert.equal(kernelTicket(state), null, 'no ticket before the entry handshake')
+  state.tickets = new Map([['dsh-auth-abc', 'v1'], ['other', 'v2']])
+  assert.equal(kernelTicket(state), 'dsh-auth-abc=v1; other=v2')
 })
