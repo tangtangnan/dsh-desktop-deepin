@@ -6,8 +6,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### 变更
+## [0.2.14] — 2026-10-07
 
+### 新增
+
+- **内核页走 `dsh-app://app/`，与官方壳同一形态**。此前渲染层直连内核的
+  `http://127.0.0.1:<port>`，DevTools 里 Request URL 暴露的是内核 origin；官方壳
+  加载的是 `dsh-app://app/`，由协议层拦截转发。本版本补齐这一层：主文档载入
+  `dsh-app://app/`，内核 JS 发的每个相对请求经 scheme handler 转发到内核 origin
+  并附上 `?token=`。
+- **原生右键菜单**。Electron 默认不给右键菜单，内核 UI 里任何输入框都无法右键
+  粘贴、无法从回答里右键复制。现按编辑状态动态给菜单：可编辑处给撤销/重做/剪切/
+  复制/粘贴/全选（各项按实际可用性置灰），有选区时只给复制，无选中不弹。菜单文案
+  为中文，与本壳其余菜单一致。
+
+### 修复
+
+- **壳启动后一片黑，主文档拿不到内容**。内核的入口握手是
+  `GET /?token=… → 303 Location: ./ + Set-Cookie: dsh-auth-…`，转发层此前把 303
+  原样交给渲染层，渲染层收到一个空 body 的重定向状态，正好渲染成全黑窗口。现由
+  转发层自行解析跳转：token 只用于入口那一跳（每跳重发会让内核视为新的未认证访问
+  而无限 303），票据按 cookie 名替换保存并跨请求重放（`dsh-app://app/` 是独立
+  origin，渲染层存不住它）。转发同时改为透传方法、请求体与业务头，只丢弃 hop-by-hop
+  与浏览器管理头。
+- **流式通道连不上，界面一直「重新连接中」**。内核前端用 `document.baseURI` 拼
+  WebSocket 地址，页面在 `dsh-app://app/` 上就拼出 `ws://app/…`——一个不存在的
+  主机。内核实际支持 `__DSH_TRANSPORT__.streamBaseUrl` 覆盖，现由转发层在送达
+  index.html 时注入该全局；WebSocket 请求头按官方壳的做法补上内核 origin、
+  握手票据与 `sec-fetch-site`。内核就绪时主动换票，不依赖渲染层是否先走过一次
+  文档请求。
+- **`contextBridge is not defined`，渲染层没有任何桥接能力**。preload 用了裸全局
+  `contextBridge`，而该运行时（Electron 33）只在 `require('electron')` 上提供它，
+  裸引用直接抛 `ReferenceError`，Chromium 报成 "Unable to load preload script"。
+  改为 `require` 取用。
+- **装好的壳里「检查更新」文案错**。`app.isPackaged` 在已安装场景下恒为 false，
+  判断改用 `ELECTRON_USER_DATA` 是否存在。
+- **壳静态页缺 CSP 响应头**。Electron 的安全警告读响应头而非 meta 标签，加载页与
+  错误页补上 `content-security-policy` 响应头。
 - **CI 的测试矩阵由三平台收敛为 ubuntu**。本项目只发 Linux deb（Deepin / UOS），
   Windows 与 macOS 既不做安装包、也不发布任何产物，继续在这两个平台上跑单元测试
   只产生噪音：`windows-latest` 固定失败 5 项（断言写的是 POSIX 路径字面量
