@@ -130,9 +130,14 @@ jobs:
           API="https://gitee.com/api/v5/repos/${OWNER}/${REPO}"
 
           # GitHub 的 runner 在境外，访问 gitee.com 偶发 SSL 握手失败（curl exit 35）
-          # 或超时。这里统一加重试与超时，避免偶发抖动让整个 job 变红。
-          CURL="curl -s --retry 3 --retry-delay 5 --retry-all-errors \
-                --connect-timeout 20 --max-time 120"
+          # 或整体超时（curl exit 28）。后者不能只靠「重试三次」解决：三次各 120
+          # 秒仍会全灭，而 Gitee 从境外可达性差的时段可以更久。
+          #
+          # 因此把等待放宽到 300 秒并重试五次——这一步是「尽力而为」的同步，慢
+          # 一点没关系，失败才是问题（失败已在下方降级为告警）。连接超时保持 20
+          # 秒：连不上要尽早知道，而不是把整段时间耗在等待上。
+          CURL="curl -s --retry 5 --retry-delay 10 --retry-all-errors \
+                --connect-timeout 20 --max-time 300"
 
           echo "== 查找 Gitee release (tag=$TAG) =="
           release_id=$($CURL "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" \
@@ -156,6 +161,7 @@ jobs:
           echo "  release id = $release_id"
 
           echo "== 上传附件 =="
+          upload_failed=0
           for f in release/*.deb; do
             [ -f "$f" ] || continue
             echo "  上传 $f"
@@ -164,7 +170,16 @@ jobs:
               echo "    OK $(basename "$f")"
             else
               echo "    FAIL $(basename "$f")"
+              upload_failed=$((upload_failed + 1))
             fi
           done
+
+          if [ "$upload_failed" -gt 0 ]; then
+            # 一个都没传上去时只 echo 一句 FAIL 就走人，CI 照样是绿的——于是
+            # 「Gitee 没收到包」这件事完全没有信号，只能靠人想起来去看。这里升
+            # 成 warning：GitHub Release 已经发布成功，不该让整个 job 变红误导
+            # 人，但必须让人看得见。
+            echo "::warning::${upload_failed} 个 deb 未上传到 Gitee（多为境外 runner 访问 gitee.com 的网络问题）；GitHub Release 不受影响，可手动补传"
+          fi
 
           echo "Gitee release 同步完成: https://gitee.com/${OWNER}/${REPO}/releases/tag/${TAG}"
