@@ -130,6 +130,12 @@ export class ShellTray {
   #balance = null
   /** @type {boolean} */
   #shortcutRegistered = false
+  /**
+   * The update state as one line, or null when the shell has nothing to say.
+   *
+   * @type {string | null}
+   */
+  #updateStatus = null
 
   /**
    * The kernel homes offered in the menu, and the one currently in use.
@@ -292,6 +298,19 @@ export class ShellTray {
    */
   setBalance(balance) {
     this.#balance = balance
+    this.#refreshMenu()
+  }
+
+  /**
+   * Reflects the update state, so the menu says what is happening without the
+   * user opening the application to find out.
+   *
+   * @param {string | null} status - one line from `updateStatusLine`, or null
+   *   when nothing is happening and the check action belongs there instead
+   * @returns {void}
+   */
+  setUpdateStatus(status) {
+    this.#updateStatus = status
     this.#refreshMenu()
   }
 
@@ -551,7 +570,12 @@ export class ShellTray {
 
     items.push(
       { type: 'separator' },
-      { label: '检查更新…', click: () => this.#onCheckUpdates() },
+      // The update line and the action share a slot: while something is
+      // happening the state is what the user needs, and the action waits for
+      // the next check rather than offering a second one mid-download.
+      this.#updateStatus === null
+        ? { label: '检查更新…', click: () => this.#onCheckUpdates() }
+        : { label: this.#updateStatus, enabled: false },
       { type: 'separator' },
       { label: '退出', click: () => this.#quit() },
     )

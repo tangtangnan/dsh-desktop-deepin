@@ -179,7 +179,23 @@ contextBridgeApi.exposeInMainWorld('shell', Object.freeze({
    * @param {(state: object) => void} handler
    * @returns {() => void} unsubscribe
    */
-  onState(handler) {
+  /**
+   * Subscribes to the update state, so the page can show the same thing the
+   * tray line shows rather than a second guess at it.
+   *
+   * @param {(state: object) => void} handler
+   * @returns {() => void} unsubscribe
+   */
+  onUpdate(/** @type {(state: object) => void} */ handler) {
+    if (typeof handler !== 'function') return () => {}
+    const listener = (/** @type {unknown} */ _event, /** @type {any} */ state) => {
+      try { handler(state) } catch { /* ignore renderer errors */ }
+    }
+    ipcRendererApi.on('shell:update', listener)
+    return () => ipcRendererApi.removeListener('shell:update', listener)
+  },
+
+  onState(/** @type {(state: object) => void} */ handler) {
     if (typeof handler !== 'function') return () => {}
     const listener = (/** @type {unknown} */ _event, /** @type {any} */ state) => {
       try { handler(state) } catch { /* ignore renderer errors */ }

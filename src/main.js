@@ -36,6 +36,8 @@ import { writeCrashReport } from './diagnostics.js'
 import { reportFatal } from './fatal-recovery.js'
 import { BackgroundNotice } from './background-notice.js'
 import { resolveThemeSource, themeBridgeScript } from './theme-bridge.js'
+import { IDLE_UPDATE_STATE, isUpdateBusy, updateStatusLine } from './update-state.js'
+import { createUpdateSchedule, resolveUpdateScheduleConfig } from './update-schedule.js'
 import { captureWindowState, fitWindowState } from './window-state.js'
 import { resolveBindings, shortcutDeliveryMode, validateBindings } from './shortcuts.js'
 import { exitConfirmCopy, shouldConfirmExit } from './exit-guard.js'
@@ -1375,9 +1377,10 @@ function installApplicationMenu(window) {
           closeWindow: () => {
             if (window.isDestroyed()) return
             // Match the window's own close handler: hide rather than quit, so
-            // the kernel and its tasks keep running.
+            // the kernel and its tasks keep running — including asking first,
+            // since from a menu the outcome is just as invisible.
             if (tray === null || tray.isQuitting) window.close()
-            else window.hide()
+            else backgroundNotice().close(() => window.hide())
           },
           reload: () => {
             if (!window.isDestroyed()) window.webContents.reload()
@@ -1976,13 +1979,68 @@ async function checkForUpdates() {
   // Packaged builds call into the auto-updater wired in update.js. Kept as a
   // no-op here so the tray item always has a handler without duplicating the
   // updater logic in two places.
+  // Everything the updater reports goes through one sink, so the tray line and
+  // the page's own indicator can never disagree about what is happening.
+  const { checkForUpdatesAndNotify, setUpdateStateSink } = await import('./update.js')
+  setUpdateStateSink(publishUpdateState)
   try {
-    const { checkForUpdatesAndNotify } = await import('./update.js')
     await checkForUpdatesAndNotify()
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     dialog.showErrorBox('Update check failed', message)
+  } finally {
+    publishUpdateState(IDLE_UPDATE_STATE)
   }
+}
+
+/**
+ * The background check, or null when it was never started.
+ *
+ * @type {ReturnType<typeof createUpdateSchedule> | null}
+ */
+let updateSchedule = null
+
+/**
+ * Publishes an update state to every surface that shows one.
+ *
+ * The tray line and the page's indicator read the same record, and a state that
+ * says nothing new is not re-sent: a status line that re-renders on every
+ * identical tick is one nobody can read.
+ *
+ * @param {import('./update-state.js').UpdateState} state - what changed
+ * @returns {void}
+ */
+function publishUpdateState(state) {
+  const busy = isUpdateBusy(state)
+  tray?.setUpdateStatus(busy ? updateStatusLine(state) : null)
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('shell:update', state)
+  }
+}
+
+/**
+ * Starts the background check.
+ *
+ * Only for an installed build: a source checkout has no update to fetch, and a
+ * timer that can only ever fail is a timer that only ever backs off.
+ *
+ * @returns {void}
+ */
+function startUpdateSchedule() {
+  if (!isInstalledLaunch()) return
+  if (getConfig().updates?.enabled !== true) return
+  if (updateSchedule !== null) return
+  updateSchedule = createUpdateSchedule({
+    config: resolveUpdateScheduleConfig(process.env),
+    check: async () => {
+      const { checkForUpdatesAndNotify } = await import('./update.js')
+      await checkForUpdatesAndNotify()
+    },
+    onSchedule: ({ failures }) => {
+      if (failures > 0) console.warn(`update check failed ${String(failures)} time(s); backing off`)
+    },
+  })
+  updateSchedule.start()
 }
 
 /**
@@ -2055,6 +2113,11 @@ if (!app.requestSingleInstanceLock()) {
       const ticket = await authenticateWebHost(origin, token)
       if (ticket === null) console.warn('kernel ticket unavailable; WebSocket dials will not authenticate')
       else shellProtoState.tickets = new Map(ticket)
+
+      // The background update check, once the application is usable. Started
+      // here rather than at import so a failure to reach the feed cannot delay
+      // anything the user is waiting for.
+      startUpdateSchedule()
 
       // The IPC channel from the locked-down preload. The renderer can only
       // call `shell.notify`; everything else in the kernel web UI has no
@@ -2341,6 +2404,11 @@ async function requestQuit() {
   // "取消" or a dismissed dialog (Esc) leaves everything as it was.
   if (response.response !== 0) return
 
+  // The background check holds a timer and possibly a request in flight; a
+  // timer that outlives the application is what keeps a Node process alive
+  // after the last window is gone.
+  updateSchedule?.stop()
+  updateSchedule = null
   tray?.prepareQuit()
   app.quit()
 }
