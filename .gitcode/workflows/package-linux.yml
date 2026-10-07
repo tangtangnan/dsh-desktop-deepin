@@ -109,9 +109,15 @@ jobs:
 
   package-arm64:
     name: Build deb arm64
-    # 壳代码（src/ tools/ config.json）与架构无关，但可执行位与 offline 包依赖
-    # 目标架构，故与 GitHub 版一致在原生 arm64 runner 上出包。
-    runs-on: [ubuntu-latest, arm64, medium]
+    # 用 x64 runner 打 arm64 包。薄壳里没有任何架构相关二进制（实测包内全是
+    # JS / shell / 文本），dpkg-deb 只是把文件与 control 打成包，Architecture
+    # 字段由 build-deb.sh 的参数决定；运行时（Electron/Node）由用户在首次启动时
+    # 按 uname -m 下载，与打包机架构无关。
+    #
+    # 原先用原生 arm64 runner，实测平台侧故障：job 在「初始化步骤」即失败，
+    # 报 Failed to download and load the plugin（预置插件在 arm64 上加载不起来）。
+    # 改用 x64 既绕开该故障，也少等一类机器的排队。
+    runs-on: [ubuntu-latest, x64, small]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
