@@ -390,18 +390,42 @@ test('makeHandler routes the kernel hostname through the forwarding path', async
   }
 })
 
-test('rewriteWebSocketUrl rewrites origin and appends the token', async () => {
-  const rewritten = rewriteWebSocketUrl(
-    'ws://127.0.0.1:33753/stream',
-    {
-      kernelOrigin: 'http://127.0.0.1:33753',
-      tokenOf: () => 'sekret',
-    },
-  )
+test('rewriteWebSocketUrl re-points the shell scheme hostname at the kernel', async () => {
+  // The kernel's frontend builds its socket URL from `document.baseURI`, so a
+  // page served from `dsh-app://app/` dials `ws://app/…` — a host that resolves
+  // nowhere. This is the shape the live console showed as
+  // `WebSocket connection to 'ws://app/api/remote.mux' failed`.
+  const rewritten = rewriteWebSocketUrl('ws://app/api/remote.mux', {
+    kernelOrigin: 'http://127.0.0.1:33753',
+    tokenOf: () => 'sekret',
+  })
   const url = new URL(rewritten)
   assert.equal(url.origin, 'ws://127.0.0.1:33753')
-  assert.equal(url.pathname, '/stream')
+  assert.equal(url.pathname, '/api/remote.mux')
   assert.equal(url.searchParams.get('token'), 'sekret')
+})
+
+test('rewriteWebSocketUrl leaves a direct kernel socket untouched', async () => {
+  // Already addressed correctly: re-pointing it would only risk a second
+  // rewrite on a URL that needs none.
+  const original = 'ws://127.0.0.1:33753/stream'
+  assert.equal(
+    rewriteWebSocketUrl(original, {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      tokenOf: () => 'sekret',
+    }),
+    original,
+  )
+})
+
+test('rewriteWebSocketUrl refuses a non-WebSocket URL', async () => {
+  assert.throws(
+    () => rewriteWebSocketUrl('http://app/api/remote.mux', {
+      kernelOrigin: 'http://127.0.0.1:33753',
+      tokenOf: () => 'sekret',
+    }),
+    /non-WebSocket/,
+  )
 })
 
 test('rewriteWebSocketUrl returns the URL untouched when no token', async () => {

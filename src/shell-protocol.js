@@ -390,15 +390,49 @@ export function createShellProtocolState() {
  * @throws {Error} when the URL's host differs from the kernel origin's host —
  *   a cross-host WebSocket must not be silently re-pointed at the kernel.
  */
+/**
+ * Re-points a WebSocket URL at the kernel, carrying the per-launch token.
+ *
+ * The renderer lives under `dsh-app://app/`, and the kernel's frontend builds
+ * its socket URL from the page's own host — so it dials `ws://app/…`, a host
+ * that resolves nowhere. Chromium cannot dial `ws://` out of a custom-scheme
+ * page at all, so the main process intercepts the attempt and re-points it at
+ * the kernel's plain origin with the ticket attached.
+ *
+ * Two shapes are accepted, and only these two:
+ *   - the kernel's own `127.0.0.1:<port>` host, when the frontend already
+ *     addressed it directly;
+ *   - `app`, the shell scheme's own hostname, which is what a page served from
+ *     `dsh-app://app/` actually produces.
+ *
+ * Anything else is refused rather than silently redirected: this hook sits on
+ * a request filter, and quietly aiming a third party's socket at the kernel
+ * would be a far worse failure than the one it is fixing.
+ *
+ * @param {string} url - the attempted socket URL.
+ * @param {object} options
+ * @param {string | null} options.kernelOrigin - the kernel's origin.
+ * @param {() => (string | null)} options.tokenOf - returns the kernel's token.
+ * @returns {string} the rewritten URL, or `url` unchanged when there is no token.
+ */
 export function rewriteWebSocketUrl(url, { kernelOrigin, tokenOf }) {
   const parsed = new URL(url)
-  const host = kernelOrigin !== null ? new URL(kernelOrigin).host : null
-  if (host !== null && parsed.host !== host) {
-    throw new Error(`refusing to re-point WebSocket ${parsed.host} at kernel ${host}`)
+  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+    throw new Error(`refusing to re-point non-WebSocket URL ${url}`)
   }
+  const kernelHost = kernelOrigin !== null && kernelOrigin !== undefined
+    ? new URL(kernelOrigin).host
+    : null
+  const isKernelHost = kernelHost !== null && parsed.host === kernelHost
+  const isShellHost = parsed.host === ROUTES.kernel
+  if (!isKernelHost && !isShellHost) {
+    throw new Error(`refusing to re-point WebSocket ${parsed.host} at kernel ${String(kernelHost)}`)
+  }
+  if (!isShellHost) return url
   const token = tokenOf()
   if (token === null || token === undefined || token === '') return url
   const rewritten = new URL(url)
+  if (kernelHost !== null) rewritten.host = kernelHost
   rewritten.searchParams.set('token', token)
   return rewritten.toString()
 }

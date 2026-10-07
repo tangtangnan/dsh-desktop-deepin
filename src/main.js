@@ -52,7 +52,7 @@ import { rename } from 'node:fs/promises'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ShellTray, trayIconPath, trayTemplateIconPath } from './tray.js'
 import { OBSERVER_SOURCE } from './dom-observer.js'
-import { installShellProtocol, registerShellScheme, rewriteWebSocketUrl } from './shell-protocol.js'
+import { installShellProtocol, registerShellScheme, rewriteWebSocketUrl, ROUTES as SCHEME_ROUTES } from './shell-protocol.js'
 
 // Scheme URLs the static loading/error pages are served from.
 // The handler is installed in `whenReady` (before the first window), and the
@@ -1355,17 +1355,22 @@ function createWindow() {
    * Installs the dual-channel WebSocket rewrite for this window.
    *
    * Chromium cannot open a `ws://` connection from a page whose URL is the
-   * shell's custom `dsh-app` scheme, but the kernel's streaming surface only
-   * speaks `ws://`. The main process intercepts each outgoing WebSocket URL,
-   * rewrites it against the kernel's plain origin with the per-launch token
-   * attached as a query parameter, and hands the result back to Chromium so
-   * the dial goes out to the real endpoint.
+   * shell's custom `dsh-app` scheme, and the kernel's frontend builds its
+   * socket URL from the page's own host — so from `dsh-app://app/` it dials
+   * `ws://app/…`, a host that resolves nowhere. The main process intercepts
+   * the attempt and re-points it at the kernel's plain origin with the
+   * per-launch token attached.
+   *
+   * Both shapes are filtered: the kernel host itself (a frontend that already
+   * addressed it directly) and the `app` scheme hostname (what this window
+   * actually produces). Anything else is left alone.
    *
    * @param {Electron.WebContents} webContents - the contents to attach to
    * @returns {void}
    */
   const installWebSocketRewrite = (webContents) => {
-    webContents.session.webRequest.onBeforeRequest({ urls: ['ws://127.0.0.1/*'] }, (details, callback) => {
+    const filter = { urls: ['ws://127.0.0.1/*', `ws://${SCHEME_ROUTES.kernel}/*`] }
+    webContents.session.webRequest.onBeforeRequest(filter, (details, callback) => {
       try {
         const rewritten = rewriteWebSocketUrl(details.url, {
           kernelOrigin: origin,
