@@ -1,0 +1,120 @@
+name: Package Linux (AtomGit)
+
+# AtomGit 作为主打包平台：runner 在国内，访问 Gitee 快且稳，
+# 产物可直接同步到 Gitee Release，不再依赖 GitHub Actions 跨境同步。
+#
+# 与 GitHub 侧 .github/workflows/package-linux.yml 保持同一套打包口径：
+#   - dpkg-deb 手工打包（不走 electron-builder，包里不含运行时）
+#   - npm install --ignore-scripts（跳过 Electron 二进制，本项目打包不需要它）
+#   - 单元测试门禁 + 包内权限断言（EACCES 复现防护）
+#
+# 注意：AtomGit 托管 runner 预装 Node 18/20，而项目 engines 要求 >=22.15.0，
+# 因此这里必须显式装 Node 22。
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: 打包 deb (${{ matrix.arch }})
+    # 三段式标签：{os},{arch},{flavor}。这里显式写全，避免 default 歧义。
+    runs-on: "ubuntu-latest,${{ matrix.runner_arch }},small"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 先只上 amd64：验证打包链路（dpkg-deb + Node22 + 打包脚本）是否可用。
+          # arm64 待确认资源池有 arm64 机器后再加，避免 job 挂起拖住整个 run。
+          - arch: amd64
+            runner_arch: x64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 环境自检
+        run: |
+          echo "════════ runner 环境 ════════"
+          . /etc/os-release && echo "系统: $PRETTY_NAME"
+          echo "架构: $(uname -m)"
+          echo ""
+          echo "════════ 打包依赖 ════════"
+          command -v dpkg-deb >/dev/null 2>&1 \
+            && echo "dpkg-deb: $(dpkg-deb --version | head -1)" \
+            || { echo "✖ 缺 dpkg-deb —— 无法打 deb"; exit 1; }
+          echo "预装 node: $(node -v 2>/dev/null || echo 无)"
+          echo "预装 npm:  $(npm -v 2>/dev/null || echo 无)"
+
+      - name: 装 Node 22（runner 预装 18/20，不满足 engines >=22.15）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 确认 Node 版本门禁
+        run: |
+          set -euo pipefail
+          echo "node: $(node -v)  npm: $(npm -v)"
+          NODE_MAJOR="$(node -v | sed 's/^v//' | cut -d. -f1)"
+          if [ "$NODE_MAJOR" -lt 22 ]; then
+            echo "✖ Node 主版本 $NODE_MAJOR < 22，不满足 package.json engines (>=22.15.0)"
+            exit 1
+          fi
+          echo "✅ Node 版本满足 engines 要求"
+
+      - name: 安装依赖（跳过 Electron 二进制）
+        # 与项目 ci.yml 同口径：--ignore-scripts 跳过 electron 的二进制下载
+        #（打包 deb 不需要 Electron，它只在运行时按需下载）。
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          npm install --ignore-scripts --no-audit --no-fund
+
+      - name: 单元测试门禁
+        run: npm test
+
+      - name: 解析版本号
+        # 打 tag 时用 tag 名（去掉 v 前缀），手动触发回退到 package.json。
+        # 用文件传递而非 runner 输出变量，避免依赖平台差异。
+        run: |
+          ref="${ATOMGIT_REF_NAME:-${ATOMGIT_REF:-${GITHUB_REF_NAME:-}}}"
+          case "$ref" in
+            v*) ver="${ref#v}" ;;
+            *)  ver="$(node -p "require('./package.json').version")" ;;
+          esac
+          echo "$ver" > .pkg-version
+          echo "版本: $ver（来源 ref=$ref）"
+
+      - name: 打包 deb
+        run: bash tools/build-deb.sh ${{ matrix.arch }} "$(cat .pkg-version)"
+
+      - name: 权限断言（EACCES 复现防护）
+        # d81cb11 修过的坑：构建机上的限制性 mode（如 0600）若溜进包里，
+        # dpkg-deb --root-owner-group 只改属主不动 mode，装到 /opt 后普通用户
+        # 读不到壳代码。这里逐文件断言，从源头堵死。
+        run: |
+          set -euo pipefail
+          DEB=$(ls release/*.deb)
+          echo "检查 $DEB 包内文件权限…"
+          BAD=$(dpkg-deb -c "$DEB" | awk '
+            $6 !~ /^\.$|\.\/DEBIAN\// && $1 ~ /^-/ &&
+            substr($1, 8, 3) != "r--" && substr($1, 8, 3) != "r-x" {print $1, $6}')
+          if [ -n "$BAD" ]; then
+            echo "✖ 发现其他用户不可读的文件（装到 /opt 会 EACCES）："
+            echo "$BAD"
+            exit 1
+          fi
+          echo "✅ 包内全部文件对其他用户可读"
+
+      - name: 产物信息
+        run: |
+          ls -lh release/
+          dpkg-deb --info release/*.deb | head -12
+
+      - name: 上传制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts-${{ matrix.arch }}
+          path: release/*.deb
