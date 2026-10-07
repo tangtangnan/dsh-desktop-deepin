@@ -47,6 +47,25 @@ if (!contextBridgeApi || !ipcRendererApi) {
   throw new Error('preload: Electron globals contextBridge/ipcRenderer are not available')
 }
 
+// Self-check: reaching this line proves Electron parsed and executed the file,
+// which is otherwise indistinguishable from "Unable to load preload script" in
+// DevTools. The main process reads it back to tell a parse failure from a
+// successful load.
+contextBridgeApi.exposeInMainWorld('__dshPreloadProbe', {
+  loaded: true,
+  hasContextBridge: contextBridgeApi !== undefined,
+  hasIpcRenderer: ipcRendererApi !== undefined,
+})
+console.log('[dsh-shell] preload loaded; contextBridge =', typeof contextBridgeApi,
+  'ipcRenderer =', typeof ipcRendererApi)
+// Also hand the mark to the main process over IPC: the renderer console is not
+// always visible (no terminal, DevTools closed), and the main process turns
+// this into a crash report on disk.
+ipcRendererApi.send('shell:preload-probe', {
+  contextBridge: typeof contextBridgeApi,
+  ipcRenderer: typeof ipcRendererApi,
+})
+
 contextBridgeApi.exposeInMainWorld('shell', Object.freeze({
   /**
    * Posts a desktop notification through the shell's `Notification` instance.

@@ -1564,6 +1564,29 @@ function createWindow() {
     void webContents.executeJavaScript(OBSERVER_SOURCE, true).catch((error) => {
       console.error(`observer inject failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+    // Preload self-check. DevTools reports a preload problem as
+    // "Unable to load preload script" without saying whether the file was
+    // missing, unreadable or threw while running, so read the mark the preload
+    // leaves on the page and report which of those it was.
+    void webContents.executeJavaScript('typeof globalThis.__dshPreloadProbe', true)
+      .then((probe) => {
+        if (probe === 'object') {
+          console.log('preload: loaded, window.__dshPreloadProbe present')
+          return
+        }
+        const message = `preload NOT loaded (window.__dshPreloadProbe is ${String(probe)})`
+        console.error(message)
+        void writeCrashReport({
+          userData: app.getPath('userData'),
+          source: 'renderer',
+          appVersion: app.getVersion(),
+          message,
+          output: `window.__dshPreloadProbe → ${String(probe)}\npreload path → ${join(here, 'preload.cjs')}`,
+        }).catch(() => undefined)
+      })
+      .catch((error) => {
+        console.error(`preload probe failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
   })
 
   // Hide-to-tray on close: when the window is the only one, closing it should
@@ -1816,6 +1839,21 @@ if (!app.requestSingleInstanceLock()) {
         const title = typeof payload?.title === 'string' ? payload.title : 'DeepSeek Harness'
         const body = typeof payload?.body === 'string' ? payload.body : ''
         tray.notify(title, body)
+      })
+
+      // The preload reporting that it ran. DevTools says only "Unable to load
+      // preload script", which cannot be told apart from a file that loaded and
+      // then threw; this message means the file executed to its first line.
+      ipcMain.on('shell:preload-probe', (_event, payload) => {
+        const line = `preload executed: contextBridge=${String(payload?.contextBridge)} ipcRenderer=${String(payload?.ipcRenderer)}`
+        console.log(line)
+        void writeCrashReport({
+          userData: app.getPath('userData'),
+          source: 'renderer',
+          appVersion: app.getVersion(),
+          message: line,
+          output: `preload path → ${join(here, 'preload.cjs')}`,
+        }).catch(() => undefined)
       })
 
       // The renderer's own report of whether a turn is in flight. This is the
