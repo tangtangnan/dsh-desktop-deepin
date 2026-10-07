@@ -15,6 +15,7 @@ import {
   registerShellScheme, serveShellDocument, forwardToKernel,
   makeHandler, installShellProtocol, createShellProtocolState,
   authenticateWebHost,
+  injectStreamBaseUrl,
   kernelTicket,
   rewriteWebSocketHeaders,
 } from './shell-protocol.js'
@@ -448,9 +449,10 @@ test('kernelTicket renders the collected jar as a Cookie header value', async ()
 
 test('authenticateWebHost exchanges the launch token for the kernel ticket', async () => {
   const realFetch = globalThis.fetch
-  let requested = null
+  /** @type {URL[]} */
+  const requested = []
   globalThis.fetch = async (input) => {
-    requested = new URL(String(input))
+    requested.push(new URL(String(input)))
     return new Response(null, {
       status: 303,
       headers: { 'set-cookie': 'dsh-auth-abc=v1.sig; Path=/; HttpOnly; SameSite=Strict' },
@@ -458,7 +460,7 @@ test('authenticateWebHost exchanges the launch token for the kernel ticket', asy
   }
   try {
     const jar = await authenticateWebHost('http://127.0.0.1:33753', 'sekret')
-    assert.equal(requested?.searchParams.get('token'), 'sekret')
+    assert.equal(requested[0]?.searchParams.get('token'), 'sekret')
     // Attributes are dropped; only name=value reaches the Cookie header.
     assert.deepEqual([...(jar ?? [])], [['dsh-auth-abc', 'v1.sig']])
   } finally {
@@ -472,6 +474,56 @@ test('authenticateWebHost reports no ticket when the kernel refuses the token', 
   try {
     assert.equal(await authenticateWebHost('http://127.0.0.1:33753', 'wrong'), null)
     assert.equal(await authenticateWebHost('http://127.0.0.1:33753', null), null)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('injectStreamBaseUrl defines the transport global ahead of the document', async () => {
+  // The kernel's client reads `__DSH_TRANSPORT__.streamBaseUrl` and falls back
+  // to `document.baseURI` when it is missing — which under `dsh-app://app/`
+  // yields `ws://app/…`, a host that does not exist.
+  const html = injectStreamBaseUrl('<!doctype html><html></html>', 'http://127.0.0.1:33753')
+  assert.match(html, /^<script>globalThis\.__DSH_TRANSPORT__=/)
+  assert.match(html, /"streamBaseUrl":"http:\/\/127\.0\.0\.1:33753"/)
+  assert.match(html, /"ownsHost":true/)
+  assert.ok(html.endsWith('<!doctype html><html></html>'),
+    'the original document must follow, untouched')
+})
+
+test('forwardToKernel injects the transport global into the index document', async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('<!doctype html><html>app</html>', {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  })
+  try {
+    const response = await forwardToKernel({
+      url: 'dsh-app://app/',
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+    })
+    const body = await response.text()
+    assert.match(body, /__DSH_TRANSPORT__/)
+    assert.match(body, /streamBaseUrl[^,]*127\.0\.0\.1:9/)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('forwardToKernel leaves non-document responses alone', async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('{"ok":true}', {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+  try {
+    const response = await forwardToKernel({
+      url: 'dsh-app://app/api/state',
+      origin: 'http://127.0.0.1:9',
+      token: 'tok',
+    })
+    assert.equal(await response.text(), '{"ok":true}')
   } finally {
     globalThis.fetch = realFetch
   }

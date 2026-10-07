@@ -305,7 +305,42 @@ export async function forwardToKernel({ url, origin, token, request, jar }) {
       ? { ...init, headers: hopHeaders }
       : { method: 'GET', headers: hopHeaders, redirect: 'manual' })
   }
-  return new Response(response.body, { status: response.status, headers: response.headers })
+
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!contentType.includes('text/html')) {
+    return new Response(response.body, { status: response.status, headers: response.headers })
+  }
+
+  // The kernel's client builds its WebSocket address from
+  // `__DSH_TRANSPORT__.streamBaseUrl`, falling back to `document.baseURI` when
+  // that global is absent (`stream-client.ts`). Under `dsh-app://app/` the
+  // fallback is `ws://app/…`, which names no host that exists — the socket
+  // never opens and the UI retries forever. The official shell avoids this by
+  // having the renderer await a boot IPC and set the global itself; injecting
+  // it into the document as it passes through removes that handshake entirely,
+  // and the value is present before any page script can read it.
+  const html = await response.text()
+  const injected = injectStreamBaseUrl(html, origin)
+  const documentHeaders = new Headers(response.headers)
+  documentHeaders.delete('content-length')
+  documentHeaders.delete('content-encoding')
+  return new Response(injected, { status: response.status, headers: documentHeaders })
+}
+
+/**
+ * Prepends the `__DSH_TRANSPORT__` global the kernel's client expects.
+ *
+ * The value is a bare `http://127.0.0.1:<port>` origin, JSON-encoded rather
+ * than interpolated into a string literal, so nothing in it can terminate the
+ * script element early.
+ *
+ * @param {string} html - the kernel's index document.
+ * @param {string} origin - the kernel's plain origin.
+ * @returns {string} the document with the transport global defined.
+ */
+export function injectStreamBaseUrl(html, origin) {
+  const transport = JSON.stringify({ ownsHost: true, streamBaseUrl: origin })
+  return `<script>globalThis.__DSH_TRANSPORT__=${transport}</script>${html}`
 }
 
 /**
