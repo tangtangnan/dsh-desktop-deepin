@@ -1510,6 +1510,34 @@ function createWindow() {
   /** @param {string} url */
   const isShellPage = (url) => url.startsWith('data:')
 
+  // Right-click menu. Electron ships with none, so every text field in the
+  // kernel UI would be right-click-hostile: no paste into the composer, no
+  // copy out of a transcript. The menu is built from the edit state Chromium
+  // reports rather than a fixed template, so items appear only where they
+  // would actually do something.
+  webContents.on('context-menu', (_event, { isEditable, selectionText, editFlags }) => {
+    /** @type {Electron.MenuItemConstructorOptions[]} */
+    const items = []
+    if (isEditable) {
+      items.push(
+        { role: 'undo', enabled: editFlags.canUndo },
+        { role: 'redo', enabled: editFlags.canRedo },
+        { type: 'separator' },
+        { role: 'cut', enabled: editFlags.canCut },
+        { role: 'copy', enabled: editFlags.canCopy },
+        { role: 'paste', enabled: editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', enabled: editFlags.canSelectAll },
+      )
+    } else if (selectionText.length > 0) {
+      items.push({ role: 'copy', enabled: editFlags.canCopy })
+    }
+    // An empty accelerator suppresses the default shortcut label Electron
+    // would otherwise print next to each native role (`Ctrl+C`, `⌘C`).
+    if (items.length === 0) return
+    Menu.buildFromTemplate(items.map((item) => ({ ...item, accelerator: '' }))).popup({ window })
+  })
+
   webContents.on('will-navigate', (event, url) => {
     if (isShellPage(url)) return
     if (!isKernelUrl(url)) {

@@ -16,35 +16,30 @@
  * that can be addressed from a compromised renderer, which is precisely what
  * the upstream policy was written to forbid.
  *
- * Sandboxed preloads run in a V8 context that has no Node module loader:
- * neither `require` nor `import` from `'electron'` resolve, because no Node
- * runtime is present. Electron instead exposes the whitelisted APIs
- * (`contextBridge`, `ipcRenderer`, `webFrame`) as plain globals in the preload
- * scope, and this file uses them directly.
+ * Sandboxed preloads run in a V8 context with a CommonJS `require` and no
+ * Node module loader beyond it, so `require('electron')` is how this file
+ * reaches `contextBridge` / `ipcRenderer`. Bare references to those names do
+ * not resolve on this runtime — see the note at the import below.
  *
  * The `.cjs` extension is what makes that work. `package.json` declares
  * `"type": "module"`, so a sibling `preload.js` would be handed to the ESM
- * loader — where Electron's injected globals are not in scope, and this file
- * dies on `ReferenceError: contextBridge is not defined`, leaving the renderer
- * with no bridge at all. `.cjs` forces the CommonJS path regardless.
+ * loader, where `require` does not exist at all. `.cjs` forces the CommonJS
+ * path regardless.
  *
  * @module preload
  */
 
-// The runtime names `contextBridge` and `ipcRenderer` exist as globals in the
-// sandboxed preload scope; TypeScript has no declaration for them because the
-// `electron` module typings assume `import { ... } from 'electron'`, which does
-// not resolve here. The `@ts-ignore` comments let the cast below type-check
-// without polluting the rest of the file with `any` types.
-/** @type {import('electron').ContextBridge} */
-// @ts-ignore — Electron global available at runtime in the preload context
-const contextBridgeApi = /** @type {any} */ (contextBridge)
-/** @type {import('electron').IpcRenderer} */
-// @ts-ignore — Electron global available at runtime in the preload context
-const ipcRendererApi = /** @type {any} */ (ipcRenderer)
+// Electron's API is reached through `require('electron')`, not through bare
+// globals. A sandboxed preload does get a CommonJS `require`, but
+// `contextBridge` / `ipcRenderer` are NOT injected as globals on Electron 33 —
+// a bare `contextBridge` reference throws `ReferenceError: contextBridge is
+// not defined`, which Chromium reports as "Unable to load preload script".
+// Verified against this runtime: `require('electron').contextBridge` succeeds
+// where the bare global throws.
+const { contextBridge: contextBridgeApi, ipcRenderer: ipcRendererApi } = require('electron')
 
 if (!contextBridgeApi || !ipcRendererApi) {
-  throw new Error('preload: Electron globals contextBridge/ipcRenderer are not available')
+  throw new Error('preload: Electron contextBridge/ipcRenderer are not available')
 }
 
 // Self-check: reaching this line proves Electron parsed and executed the file,
