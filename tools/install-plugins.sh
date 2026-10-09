@@ -142,6 +142,11 @@ installed() {
 # start-shell.sh 启动时用它决定「是否需要弹终端补装」，因此这里绝不能
 # 触发任何下载（不能调 ensure_pnpm）。dsh 缺失时视为未知，返回 0 不打扰。
 if [ "$FORCE" = "check" ]; then
+  # full-offline 安装（包内 runtimes/FULL-OFFLINE 标记）：默认插件需要联网
+  # 下载（pnpm + npm registry），断网机器上每次启动弹终端只会徒增失败提示。
+  # check 静默跳过；需要补装插件时在联网环境下手动跑：
+  #   bash /opt/deepseek-harness-desktop/tools/install-plugins.sh
+  [ -f "$SHELL_DIR/runtimes/FULL-OFFLINE" ] && exit 0
   [ -n "$DSH_BIN" ] || exit 0
   miss=""
   for pkg in "${PLUGINS[@]}"; do
