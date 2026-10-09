@@ -1,0 +1,56 @@
+# Package full-offline arm64 deb（DSH Desktop 深度离线包 · 云端构建）
+#
+# 【前提】仓库必须是 Public —— GitHub 的 arm64 runner（ubuntu-24.04-arm）
+#         只对公开仓库免费，私有仓库会消耗付费额度。
+#
+# 【放置位置】把本文件放到 fork 仓库的 .github/workflows/package-full-offline-arm64.yml
+#   仓库中还需要这 3 个文件（全部可在 GitHub 网页上上传/编辑，不需要 git）：
+#     1. build-full-offline-arm64.sh            → 仓库根目录
+#     2. overlay/tools/build-deb.sh  的内容      → 覆盖仓库的 tools/build-deb.sh
+#     3. overlay/tools/install-plugins.sh 的内容 → 覆盖仓库的 tools/install-plugins.sh
+#   （也可以把 overlay/tools/ 两个文件按原路径上传，脚本会自动拷贝，效果相同；
+#     构建脚本会校验 tools/build-deb.sh 里是否含 --full-offline，没叠加成功会直接报错）
+#
+# 【触发】仓库页面 → Actions → 左侧 "Package full-offline arm64" → Run workflow
+#         约 30~50 分钟；完成后在 run 页面底部 Artifacts 下载 deb。
+
+name: Package full-offline arm64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build toolchain (node-pty native compile)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 make g++ unzip
+
+      - name: Build full-offline deb
+        env:
+          DSH_REPO_DIR: ${{ github.workspace }}
+        run: bash build-full-offline-arm64.sh
+
+      - name: Report ABI requirement of pty.node
+        # 构建机的 glibc/libstdc++ 若比目标机（Kylin V10）新，加载原生模块可能失败。
+        # 这一步把需求版本打进日志，方便与目标机比对；真出问题可在目标机本地重编。
+        continue-on-error: true
+        run: |
+          P=build/dsh-desktop-deepin/resources/kernel/node_modules/node-pty/build/Release/pty.node
+          [ -f "$P" ] || P=$(find . -name pty.node -print -quit)
+          echo "pty.node: $P"
+          objdump -p "$P" | grep -oE 'GLIBC(XX)?_[0-9][0-9.]*' | sort -Vu | tail -5
+
+      - name: Collect artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-offline-arm64-deb
+          path: |
+            build/dsh-desktop-deepin/release/*.deb
