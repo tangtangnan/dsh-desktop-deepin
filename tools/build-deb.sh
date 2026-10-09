@@ -31,14 +31,20 @@ OUTPUT_DIR="$ROOT/release"
 # 壳本身（src/ tools/ config.json）是架构无关的纯 JS + shell，deb 不含运行时，
 # 运行时由 bootstrap.sh 按 uname -m 首次启动下载（官方 Electron/Node 均提供
 # linux-arm64 / linux-x64 预编译包）。所以同一个源码可以打 amd64 与 arm64 两种包。
-# 用法：bash tools/build-deb.sh [amd64|arm64] [版本] [--offline]
+# 用法：bash tools/build-deb.sh [amd64|arm64] [版本] [--offline|--full-offline]
 #   --offline：在包内嵌 Node + Electron 的官方压缩包（若 release/ 下已有），
 #   bootstrap.sh 优先解包本地缓存，实现「装完即用、首启零下载」。
 #   产物命名为 *-offline.deb；缺压缩包时明确报错，而不是悄悄打出在线包。
+#   --full-offline：在 --offline 基础上再内嵌完整 dsh 内核树
+#   （resources/kernel：@deepseek-ai/dsh + 全部依赖 + 内核自带 node 二进制），
+#   并预写 config.json 直接指向内嵌内核——安装后零联网、零下载、零 npm，
+#   断网机器 dpkg -i 完即可从启动器点开就用。产物命名为 *-full-offline.deb。
 ARCH="${1:-amd64}"
 OFFLINE=0
+FULL=0
 for arg in "$@"; do
   [ "$arg" = "--offline" ] && OFFLINE=1
+  [ "$arg" = "--full-offline" ] && { OFFLINE=1; FULL=1; }
 done
 case "$ARCH" in
   amd64|x86_64) ARCH="amd64"; DEB_ARCH="amd64"; NODE_ARCH_LABEL="x64" ;;
@@ -141,22 +147,63 @@ if [ "$OFFLINE" -eq 1 ]; then
   chmod 0644 "$RT_DIR"/* 2>/dev/null
 fi
 
+# ── full-offline 模式：内嵌完整 dsh 内核树 ─────────────────────────────
+# 内核树由构建机上的 `node tools/install-kernel.js` 预先装好
+# （tools/install-kernel.js 会装 @deepseek-ai/dsh + shipped 插件 + 补 peer +
+#   换装并编译 node-pty 原生模块），再把内核专用 Node 二进制放到
+#   resources/kernel/node（src/main.js 的 resolveKernelPaths 约定路径）。
+# 装到目标机后：config.json 的 systemDsh / nodeBinDir 直接指向包内路径，
+# start-shell.sh 的系统内核模式三项全部本地命中，不走任何网络。
+if [ "$FULL" -eq 1 ]; then
+  say "full-offline 模式：内嵌 dsh 内核树…"
+  KERNEL_SRC="$ROOT/resources/kernel"
+  [ -f "$KERNEL_SRC/node_modules/@deepseek-ai/dsh/lib/bin.js" ] \
+    || err "full-offline 需要预装内核树：$KERNEL_SRC 缺少 @deepseek-ai/dsh
+先在联网的 $NODE_ARCH_LABEL 机器上执行：node tools/install-kernel.js"
+  [ -x "$KERNEL_SRC/node" ] \
+    || err "full-offline 需要内核自带 Node：$KERNEL_SRC/node 不存在或不可执行
+（从 ${NODE_VER_TIP:-node dist} 提取 bin/node 放到该路径）"
+  mkdir -p "$APP_DIR/resources"
+  cp -a "$KERNEL_SRC" "$APP_DIR/resources/kernel"
+  # 权限兜底：整树可读可进，node 二进制保留可执行（同壳代码的 a+rX 口径）
+  chmod -R a+rX "$APP_DIR/resources/kernel"
+  chmod 0755 "$APP_DIR/resources/kernel/node"
+  # 预写 config.json：系统内核模式三项里 dsh/node 两项直接指向包内路径，
+  # 用户覆盖份（~/.config/dsh-desktop/config.json）不存在时全局份即生效。
+  sed -i "s|\"systemDsh\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"systemDsh\": \"/opt/$PKG_NAME/resources/kernel/node_modules/@deepseek-ai/dsh/lib/bin.js\"|" "$APP_DIR/config.json"
+  sed -i "s|\"nodeBinDir\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"nodeBinDir\": \"/opt/$PKG_NAME/resources/kernel\"|" "$APP_DIR/config.json"
+  # 离线标记：install-plugins.sh 的 check 模式据此静默跳过，避免断网机器
+  # 每次启动弹终端补装插件（插件 market 等本就需要联网才有内容）。
+  touch "$RT_DIR/FULL-OFFLINE"
+  chmod 0644 "$RT_DIR/FULL-OFFLINE"
+  say "  内核树 $(du -sh "$APP_DIR/resources/kernel" | cut -f1) → $APP_DIR/resources/kernel"
+fi
+
 # ── DEBIAN 控制文件 ─────────────────────────────────────────────────────
 say "写 DEBIAN/control…"
+# full-offline 包内嵌全部运行时与内核，目标机不需要联网下载，
+# Depends 收窄到解包与自检所需的最小集（curl/wget 不再是硬依赖）。
+if [ "$FULL" -eq 1 ]; then
+  DEPENDS_LINE="bash, tar, gzip, unzip, ca-certificates"
+  DESC_LINE=" 内嵌 Electron + Node + dsh 内核（full-offline），安装后零联网可用。"
+else
+  DEPENDS_LINE="bash, curl | wget, tar, gzip, unzip, ca-certificates"
+  DESC_LINE=" 本包只包含壳代码（约 1MB）。Electron、Node 与 dsh 内核在首次
+ 启动时按需下载（国内镜像优先），见 tools/bootstrap.sh。"
+fi
 cat > "$STAGE/DEBIAN/control" <<EOF
 Package: $PKG_NAME
 Version: $VERSION
 Section: devel
 Priority: optional
 Architecture: $DEB_ARCH
-Depends: bash, curl | wget, tar, gzip, unzip, ca-certificates
+Depends: $DEPENDS_LINE
 Maintainer: DeepSeek Harness Desktop Community <noreply@example.com>
 Description: DeepSeek Harness 桌面壳（Deepin / UOS / Linux $NODE_ARCH_LABEL）
  面向 Deepin / UOS / Linux $NODE_ARCH_LABEL 的 DeepSeek Harness 桌面壳。
  把命令行 agent 运行时 dsh 包进 Electron 窗口，双击即用。
  .
- 本包只包含壳代码（约 1MB）。Electron、Node 与 dsh 内核在首次
- 启动时按需下载（国内镜像优先），见 tools/bootstrap.sh。
+$DESC_LINE
 Homepage: https://github.com/westanke/dsh-desktop-deepin
 EOF
 
@@ -212,6 +259,7 @@ EOF
 mkdir -p "$OUTPUT_DIR"
 SUFFIX=""
 [ "$OFFLINE" -eq 1 ] && SUFFIX="-offline"
+[ "$FULL" -eq 1 ] && SUFFIX="-full-offline"
 DEB_FILE="$OUTPUT_DIR/DeepSeek-Harness-Desktop-${VERSION}${SUFFIX}-${ARCH}.deb"
 say "打包 $DEB_FILE …"
 # -Zgzip：显式指定压缩格式。新版 dpkg-deb（Ubuntu 24.04 runner，1.22+）默认改用
