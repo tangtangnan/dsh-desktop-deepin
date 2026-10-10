@@ -1,23 +1,33 @@
-# Package full-offline arm64 deb（DSH Desktop 深度离线包 · 云端构建）
+# Package full-offline arm64（DSH Desktop 深度离线包 · 云端构建）
 #
 # 【前提】仓库必须是 Public —— GitHub 的 arm64 runner（ubuntu-24.04-arm）
 #         只对公开仓库免费，私有仓库会消耗付费额度。
 #
 # 【放置位置】把本文件放到 fork 仓库的 .github/workflows/package-full-offline-arm64.yml
 #   仓库中还需要这 3 个文件（全部可在 GitHub 网页上上传/编辑，不需要 git）：
-#     1. build-full-offline-arm64.sh            → 仓库根目录
-#     2. overlay/tools/build-deb.sh  的内容      → 覆盖仓库的 tools/build-deb.sh
+#     1. build-full-offline-arm64.sh             → 仓库根目录（必须，最新版）
+#     2. overlay/tools/build-tarball.sh 的内容   → 覆盖/新建仓库的 tools/build-tarball.sh
 #     3. overlay/tools/install-plugins.sh 的内容 → 覆盖仓库的 tools/install-plugins.sh
-#   （也可以把 overlay/tools/ 两个文件按原路径上传，脚本会自动拷贝，效果相同；
-#     构建脚本会校验 tools/build-deb.sh 里是否含 --full-offline，没叠加成功会直接报错）
+#     （overlay/tools/build-deb.sh 只在 FORMAT=deb|both 时才需要，默认出 tar.gz，不用放）
+#   构建脚本会校验这些脚本是否含 --full-offline，没叠加成功会直接报错中止。
 #
 # 【触发】仓库页面 → Actions → 左侧 "Package full-offline arm64" → Run workflow
-#         约 30~50 分钟；完成后在 run 页面底部 Artifacts 下载 deb。
+#         约 20~50 分钟；完成后在 run 页面底部 Artifacts 下载 tar.gz。
+#         若失败，同页面会有 build-debug-logs 制品（npm 日志），便于定位。
 
 name: Package full-offline arm64
 
 on:
   workflow_dispatch:
+    inputs:
+      format:
+        description: '产物格式（tar.gz=免 root 便携包 / deb=需 sudo / both）'
+        required: false
+        default: 'tar.gz'
+      debug:
+        description: '打开脚本全量跟踪（set -x）'
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
@@ -25,17 +35,36 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
+
+      # runner 自带的 Node 是 20.x，脚本要求 ≥22.15。这里直接用官方 action 装 22，
+      # 省掉脚本自己去下载 30MB 工具链（境外拉 npmmirror 有时不稳）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Install build toolchain (node-pty native compile)
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential python3 make g++ unzip
 
-      - name: Build full-offline deb
+      - name: Diagnostics (env + network reachability)
+        run: |
+          echo "arch: $(uname -m)"
+          echo "glibc: $(ldd --version | head -1)"
+          echo "node: $(node --version)  npm: $(npm --version)"
+          echo "python3: $(command -v python3)  g++: $(command -v g++)  make: $(command -v make)"
+          for u in https://registry.npmmirror.com https://registry.npmjs.org https://nodejs.org/dist https://github.com; do
+            printf '  %-38s %s\n' "$u" "$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$u" || echo FAIL)"
+          done
+
+      - name: Build full-offline package
         env:
           DSH_REPO_DIR: ${{ github.workspace }}
+          FORMAT: ${{ github.event.inputs.format || 'tar.gz' }}
+          DSH_DEBUG: ${{ github.event.inputs.debug || 'false' }}
         run: bash build-full-offline-arm64.sh
 
       - name: Report ABI requirement of pty.node
@@ -43,14 +72,25 @@ jobs:
         # 这一步把需求版本打进日志，方便与目标机比对；真出问题可在目标机本地重编。
         continue-on-error: true
         run: |
-          P=build/dsh-desktop-deepin/resources/kernel/node_modules/node-pty/build/Release/pty.node
+          P="${DSH_REPO_DIR:-.}/resources/kernel/node_modules/node-pty/build/Release/pty.node"
           [ -f "$P" ] || P=$(find . -name pty.node -print -quit)
           echo "pty.node: $P"
-          objdump -p "$P" | grep -oE 'GLIBC(XX)?_[0-9][0-9.]*' | sort -Vu | tail -5
+          [ -n "$P" ] && objdump -p "$P" | grep -oE 'GLIBC(XX)?_[0-9][0-9.]*' | sort -Vu | tail -5
 
       - name: Collect artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: full-offline-arm64-deb
+          name: full-offline-arm64
           path: |
-            build/dsh-desktop-deepin/release/*.deb
+            **/release/*.tar.gz
+            **/release/*.deb
+
+      # 失败时把 npm 日志留下来，方便直接下载查看，而不用翻几十 MB 的构建日志
+      - name: Upload npm debug logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-debug-logs
+          path: |
+            /home/runner/.npm/_logs/*.log
+            /home/runner/work/_temp/*.log
