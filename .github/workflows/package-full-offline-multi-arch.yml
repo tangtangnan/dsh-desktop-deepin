@@ -59,18 +59,13 @@ jobs:
     name: Build ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 330
-    # 用户选了单架构时，跳过另一个 job（workflow_dispatch 一定有值，这里用 both 兜底）
-    if: ${{ (inputs.arch || 'both') == 'both' || (inputs.arch || 'both') == matrix.arch }}
+    # 注意：job 级 if 不能引用 matrix 上下文（matrix 在 job 展开时才求值，
+    # GitHub 会报 "Unrecognized named-value: 'matrix'"）。所以「只构建某个架构」
+    # 是用动态 matrix 实现的：按 inputs.arch 生成对应的 include 列表。
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest        # x86_64
-            elf: 'x86-64'
-          - arch: arm64
-            runner: ubuntu-24.04-arm     # aarch64（仅 Public 仓库免费）
-            elf: 'ARM aarch64'
+      # 这里用 github.event.inputs（而非 inputs）上下文：它在 strategy 层一定可用。
+      matrix: ${{ fromJSON((github.event.inputs.arch || 'both') == 'both' && '{"include":[{"arch":"amd64","runner":"ubuntu-latest","elf":"x86-64"},{"arch":"arm64","runner":"ubuntu-24.04-arm","elf":"ARM aarch64"}]}' || (github.event.inputs.arch || 'both') == 'amd64' && '{"include":[{"arch":"amd64","runner":"ubuntu-latest","elf":"x86-64"}]}' || '{"include":[{"arch":"arm64","runner":"ubuntu-24.04-arm","elf":"ARM aarch64"}]}') }}
     steps:
       - uses: actions/checkout@v4
 
