@@ -1,0 +1,221 @@
+# Package full-offline —— amd64 + arm64 一次双架构构建（DSH Desktop 深度离线包）
+#
+# 【前提】仓库必须是 Public —— GitHub 的 arm64 runner（ubuntu-24.04-arm）
+#         只对公开仓库免费，私有仓库会消耗付费额度（amd64 无此限制）。
+#
+# 【放置位置】把本文件放到 fork 仓库的 .github/workflows/package-full-offline-multi-arch.yml
+#   仓库中还需要这 3 个文件（全部可在 GitHub 网页上上传/编辑，不需要 git）：
+#     1. build-full-offline-arm64.sh             → 仓库根目录（必须是 v3.0+，支持双架构）
+#     2. overlay/tools/build-tarball.sh 的内容   → 覆盖/新建仓库的 tools/build-tarball.sh
+#     3. overlay/tools/install-plugins.sh 的内容 → 覆盖仓库的 tools/install-plugins.sh
+#     （overlay/tools/build-deb.sh 只在 FORMAT=deb|both 时才需要，默认出 tar.gz，不用放）
+#   构建脚本启动时会校验 --full-offline 是否就位，没叠加成功会直接报错中止。
+#
+# 【架构说明】node-pty 是原生模块，无法交叉编译，所以：
+#     amd64 包 → 在 x86_64 runner（ubuntu-latest）上原生编译
+#     arm64 包 → 在 aarch64 runner（ubuntu-24.04-arm）上原生编译
+#   本 workflow 用 matrix 两条并行job 各自构建，互不阻塞（fail-fast: false）。
+#
+# 【触发】仓库页面 → Actions → 左侧 "Package full-offline (amd64 + arm64)" → Run workflow
+#         约 20~50 分钟；完成后在 run 页面底部 Artifacts 下载：
+#           full-offline-amd64 / full-offline-arm64（单个）
+#           full-offline-all-arch（两个打包在一起，含 MANIFEST.txt）
+#         ⚠️ Artifact 默认只保留 90 天，且免费账户有存储额度限制，
+#            拿到后请立即下载到本地备份。
+
+name: Package full-offline (amd64 + arm64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: '构建哪些架构（both = amd64 + arm64 都构建）'
+        required: false
+        default: 'both'
+        type: choice
+        options: [both, amd64, arm64]
+      format:
+        description: '产物格式（tar.gz=免 root 便携包 / deb=需 sudo / both）'
+        required: false
+        default: 'tar.gz'
+        type: choice
+        options: [tar.gz, deb, both]
+      debug:
+        description: '打开脚本全量跟踪（set -x），排错时用'
+        required: false
+        default: 'false'
+        type: boolean
+      publish_release:
+        description: '额外创建 GitHub Draft Release 并上传（便于长期保存/分享链接）'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 330
+    # 用户选了单架构时，跳过另一个 job（workflow_dispatch 一定有值，这里用 both 兜底）
+    if: ${{ (inputs.arch || 'both') == 'both' || (inputs.arch || 'both') == matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest        # x86_64
+            elf: 'x86-64'
+          - arch: arm64
+            runner: ubuntu-24.04-arm     # aarch64（仅 Public 仓库免费）
+            elf: 'ARM aarch64'
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner 自带 Node 是 20.x，脚本要求 ≥22.15。直接用官方 action 装 22，
+      # 省掉脚本自己去下载 30MB 工具链（境外拉 npmmirror 有时不稳）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install build toolchain (node-pty native compile)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 make g++ unzip binutils file
+
+      - name: Diagnostics (env + network reachability)
+        run: |
+          echo "job arch     : ${{ matrix.arch }}"
+          echo "uname -m     : $(uname -m)"
+          echo "glibc        : $(ldd --version | head -1)"
+          echo "node / npm   : $(node --version) / $(npm --version)"
+          echo "python3/g++/make: $(command -v python3) $(command -v g++) $(command -v make)"
+          for u in https://registry.npmmirror.com https://registry.npmjs.org https://nodejs.org/dist https://github.com; do
+            printf '  %-38s %s\n' "$u" "$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$u" || echo FAIL)"
+          done
+
+      - name: Build full-offline package
+        env:
+          DSH_REPO_DIR: ${{ github.workspace }}
+          ARCH: ${{ matrix.arch }}
+          FORMAT: ${{ inputs.format || 'tar.gz' }}
+          DSH_DEBUG: ${{ inputs.debug || 'false' }}
+        run: bash build-full-offline-arm64.sh
+
+      # 关键自检：确认产物里的二进制确实是目标架构。
+      # 交叉混入错误架构是最致命（也最容易被忽略）的失败模式，这里保险再查一次。
+      - name: Verify artifact architecture
+        run: |
+          set -euo pipefail
+          WANT="${{ matrix.elf }}"
+          K="resources/kernel"
+          check() {
+            local f="$1"
+            [ -f "$f" ] || { echo "  ⚠ 跳过（不存在）: $f"; return 0; }
+            local info
+            info="$(file -b "$f" 2>/dev/null || echo unknown)"
+            if printf '%s' "$info" | grep -q "$WANT"; then
+              echo "  ✅ $(basename "$f") → $WANT"
+            else
+              echo "  ✖ $(basename "$f") 架构不符！期望 $WANT，实际： $info"
+              return 1
+            fi
+          }
+          echo "目标架构：${{ matrix.arch }}（ELF 标识应含 '$WANT'）"
+          check "$K/node"
+          check "$K/node_modules/node-pty/build/Release/pty.node"
+          # runtimes/ 里的 electron zip 用文件名判断即可（内含未解压的二进制）
+          ls -lh release/ 2>/dev/null || true
+          case "${{ matrix.arch }}" in
+            amd64) ls release/ | grep -q 'linux-x64'   && echo "  ✅ 运行时压缩包为 linux-x64"   || echo "  ⚠ 未见 linux-x64 运行时包" ;;
+            arm64) ls release/ | grep -q 'linux-arm64' && echo "  ✅ 运行时压缩包为 linux-arm64" || echo "  ⚠ 未见 linux-arm64 运行时包" ;;
+          esac
+
+      - name: Report ABI requirement of pty.node
+        # 构建机的 glibc/libstdc++ 若比目标机（Kylin V10 ≈ glibc 2.31）新，
+        # 加载原生模块可能报 version `GLIBCXX_x.x.xx' not found。
+        # 这里把需求的最高符号版本打进日志，方便与目标机比对；真出问题在目标机本地重编即可。
+        continue-on-error: true
+        run: |
+          P="resources/kernel/node_modules/node-pty/build/Release/pty.node"
+          [ -f "$P" ] || P="$(find . -name pty.node -print -quit || true)"
+          echo "pty.node: ${P:-（未找到）}"
+          [ -n "$P" ] && [ -f "$P" ] && objdump -p "$P" | grep -oE 'GLIBC(XX)?_[0-9][0-9.]*' | sort -Vu | tail -6
+
+      - name: Collect artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-offline-${{ matrix.arch }}
+          path: |
+            release/*.tar.gz
+            release/*.deb
+
+      # 失败时把 npm 日志留下来，方便直接下载查看，而不用翻几十 MB 的构建日志
+      - name: Upload npm debug logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-debug-logs-${{ matrix.arch }}
+          path: |
+            /home/runner/.npm/_logs/*.log
+            /home/runner/work/_temp/*.log
+
+  publish:
+    name: Publish combined package
+    runs-on: ubuntu-latest
+    needs: build
+    # 即使某个架构失败，只要有成功产物就汇总（配合 fail-fast: false）
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: full-offline-*
+          merge-multiple: true
+
+      - name: Build MANIFEST
+        run: |
+          cd dist
+          echo "DSH Desktop 深度离线包 · 构建清单"                    > MANIFEST.txt
+          echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> MANIFEST.txt
+          echo "date: $(date -u '+%Y-%m-%d %H:%M UTC')"              >> MANIFEST.txt
+          echo ""                                                    >> MANIFEST.txt
+          printf '%-16s %-8s %s\n' SHA256 SIZE FILE                  >> MANIFEST.txt
+          found=0
+          for f in *.tar.gz *.deb; do
+            [ -f "$f" ] || continue
+            found=1
+            printf '%-16s %-8s %s\n' \
+              "$(sha256sum "$f" | cut -c1-16)" \
+              "$(du -h "$f" | cut -f1)" "$f" >> MANIFEST.txt
+          done
+          [ "$found" = "1" ] || echo "（未找到任何产物）" >> MANIFEST.txt
+          cat MANIFEST.txt
+          ls -lh
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-offline-all-arch
+          path: dist/*
+
+      # 可选：Artifact 只保留 90 天且有存储额度限制；勾了 publish_release 就额外
+      # 生成一个 Draft Release（默认草稿，只有你自己可见，确认无误后可点 Publish）
+      - name: Create draft release with assets
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="offline-$(date -u '+%Y%m%d-%H%M')"
+          gh release create "$TAG" \
+            --draft \
+            --title "DeepSeek Harness Desktop 离线便携包 $TAG" \
+            --notes "由 GitHub Actions 自动构建（run ${{ github.run_id }}）。amd64 / arm64 双架构，解压后 bash install.sh 免 root 安装。" \
+            dist/*.tar.gz dist/*.deb dist/MANIFEST.txt 2>/dev/null || \
+          gh release upload "$TAG" dist/*.tar.gz dist/*.deb dist/MANIFEST.txt --clobber
+          echo "Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
