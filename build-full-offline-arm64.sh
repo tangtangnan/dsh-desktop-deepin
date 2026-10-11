@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════
-# DSH Desktop 深度离线（full-offline）arm64 一键构建脚本
+# DSH Desktop 深度离线（full-offline）一键构建脚本 —— amd64 / arm64 双架构
 #
 # 默认产出免 root 的 tar.gz 便携包（FORMAT=deb|both 可切），内嵌全部运行时：
-#   · Electron v33.3.0 linux-arm64（官方 zip，来自 npmmirror）
-#   · Node v24.19.0 linux-arm64（bootstrap 自举兜底用）
+#   · Electron v33.3.0 linux-<arch>（官方 zip，来自 npmmirror）
+#   · Node v24.19.0 linux-<arch>（bootstrap 自举兜底用）
 #   · 完整 dsh 内核树（@deepseek-ai/dsh@0.2.0-rc.2 + dshmarket 插件
-#     + 全部依赖 + node-pty 原生模块，arm64 编译）+ 内核专用 Node v22.22.0
+#     + 全部依赖 + node-pty 原生模块，本机编译）+ 内核专用 Node v22.22.0
 # 安装后：零联网、零下载、零 npm，断网机器解压 install.sh 完即用。
 #
-# 【在哪跑】必须有外网的 aarch64 Linux（以下任选其一）：
-#   A. 生产机本身（若它实际能访问外网）——装完构建依赖直接构建+安装
-#   B. 任意联网的 arm64 云主机/开发板，构建完把包拷回生产机
-#   C. GitHub Actions 的免费 arm64 runner（见同目录 package-full-offline-arm64.yml）
+# 【架构】ARCH=amd64 | arm64（默认按当前机器 uname -m 自动判定）
+#         必须在「目标架构」的机器上原生──build 不了交叉架构：
+#         node-pty 是原生模块，只能在目标 CPU 上编译。
 #
-# 【产物】dsh-full-offline-kit/build/dsh-desktop-deepin/release/
-#         DeepSeek-Harness-Desktop-<版本>-full-offline-arm64.tar.gz  （默认）
-#         DeepSeek-Harness-Desktop-<版本>-full-offline-arm64.deb     （FORMAT=deb）
+# 【在哪跑】必须有外网的 amd64 或 arm64 Linux（以下任选其一）：
+#   A. 目标机本身（若能访问外网）——装完构建依赖直接构建+安装
+#   B. 任意同架构的联网云主机，构建完把包拷回目标机
+#   C. GitHub Actions 云构建（见 package-full-offline-multi-arch.yml，
+#      用 matrix 一次同时产出 amd64 + arm64 两个包）
+#
+# 【产物】<kit>/build/dsh-desktop-deepin/release/
+#         DeepSeek-Harness-Desktop-<版本>-full-offline-<arch>.tar.gz（默认）
+#         DeepSeek-Harness-Desktop-<版本>-full-offline-<arch>.deb    （FORMAT=deb）
 #
 # 【网络】所有下载件都带「国内镜像 → 官方源」两级回退；npm 安装失败自动
 #         换源重试（3 轮 × 2 源）。境外 runner 访问 npmmirror 不稳也不会中断。
@@ -43,13 +48,16 @@ WORK="${WORK:-$KIT_DIR/build}"
 ALLOW_NO_TOOLCHAIN="${ALLOW_NO_TOOLCHAIN:-0}"
 # 产物格式：tar.gz（默认，免 root 便携包）| deb | both
 FORMAT="${FORMAT:-tar.gz}"
+# 目标架构：amd64 | arm64 | auto（默认 auto = 按当前机器 uname -m 判定）
+ARCH="${ARCH:-auto}"
 # 版本标记：日志第一行会打出来，用来确认 runner 上跑的是不是最新版
-KIT_VERSION="v2.1 · 2026-10-11（默认 tar.gz + 双源回退 + npm 双 registry 重试 + 失败定位 + node-pty 定点重编）"
+KIT_VERSION="v3.0 · 2026-10-11（amd64/arm64 双架构 + 默认 tar.gz + 双源回退 + npm 双 registry 重试 + 失败定位 + node-pty 定点重编）"
 
 say()  { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '  ✅ %s\n' "$*"; }
 warn() { printf '  ⚠ %s\n' "$*"; }
-die()  { printf '  ✖ %s\n' "$*" >&2; exit 1; }
+# %b 而非 %s：让多行报错里的 \n 真正换行（下面几条 die 是跨行消息）
+die()  { printf '  ✖ %b\n' "$*" >&2; exit 1; }
 say2() { printf '  · %s\n' "$*"; }
 
 # 失败定位：打印出错行号/命令，并顺带吐出 npm 日志尾部（排查第一步就看这里）
@@ -131,7 +139,38 @@ NODE_BASES=( "$NODE_MIRROR/$KERNEL_NODE_VER" "https://nodejs.org/dist/$KERNEL_NO
 # ── ① 预检 ────────────────────────────────────────────────────────────
 say "① 预检"
 printf '  · 构建工具链 %s\n' "$KIT_VERSION"
-[ "$(uname -m)" = "aarch64" ] || die "本脚本须在 aarch64 (ARM64) Linux 上运行（当前: $(uname -m)）"
+
+# ── 架构判定 ──────────────────────────────────────────────────────────
+# ARCH=auto（默认）按当前机器 CPU 判定；也可显式 ARCH=amd64|arm64 覆盖。
+# 然后必须校验「目标架构」与「本机 CPU」一致：node-pty 是原生模块，
+# 交叉编译不可用，所以 amd64 包只能在 x86_64 机器上打，arm64 包只能在
+# aarch64 机器上打。这里拦住，避免产出一个跑不起来的包。
+HOST_MACH="$(uname -m)"
+case "$ARCH" in
+  auto|"")
+    case "$HOST_MACH" in
+      x86_64|amd64)  ARCH=amd64  ;;
+      aarch64|arm64) ARCH=arm64  ;;
+      *) die "无法识别的 CPU 架构：$HOST_MACH（本脚本仅支持 amd64 / arm64。\n  如需其它架构请用 ARCH=xxx 显式指定后再试）" ;;
+    esac
+    ;;
+  amd64|x86_64)  ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) die "不支持的目标架构：$ARCH（仅支持 amd64 / arm64）" ;;
+esac
+case "$ARCH" in
+  amd64)
+    WANT_HOST="x86_64"; NODE_ARCH="x64";   ARCH_LABEL="x86_64 (amd64)"
+    ;;
+  arm64)
+    WANT_HOST="aarch64"; NODE_ARCH="arm64"; ARCH_LABEL="aarch64 (arm64)"
+    ;;
+esac
+[ "$HOST_MACH" = "$WANT_HOST" ] || die "架构不匹配：要打 $ARCH 包，但本机是 $HOST_MACH。
+  node-pty 原生模块无法交叉编译，必须在目标架构的机器上原生构建。
+  · 打 amd64 包 → 在 x86_64 机器上跑本脚本
+  · 打 arm64 包 → 在 aarch64 机器上跑，或用 GitHub Actions 的 ubuntu-24.04-arm runner"
+
 for c in tar unzip gzip sha256sum sed grep awk; do
   command -v "$c" >/dev/null 2>&1 || die "缺少命令: $c"
 done
@@ -139,7 +178,7 @@ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "缺�
 if [ "$FORMAT" != "tar.gz" ]; then
   command -v dpkg-deb >/dev/null 2>&1 || die "缺少 dpkg-deb（打 deb 需要；FORMAT=tar.gz 不需要）"
 fi
-ok "架构 aarch64，基础工具齐备（FORMAT=$FORMAT）"
+ok "架构 $ARCH_LABEL，基础工具齐备（FORMAT=$FORMAT）"
 printf '  · 网络自检：'
 for u in "https://registry.npmmirror.com" "https://registry.npmjs.org" "https://nodejs.org/dist"; do
   if command -v curl >/dev/null 2>&1; then
@@ -158,7 +197,7 @@ if [ -n "$MISS_TC" ]; then
     warn "缺编译工具链:$MISS_TC（已 ALLOW_NO_TOOLCHAIN=1 放行）——node-pty 无法编译，内核终端 PTY 功能会降级"
   else
     die "缺编译工具链:$MISS_TC
-node-pty 原生模块必须在 arm64 上编译。请先安装（Kylin V10）：
+node-pty 原生模块必须在目标架构机器上编译。请先安装（Kylin V10 / Ubuntu）：
   sudo apt install -y build-essential python3 make g++
 或确认确不需要终端 PTY 功能后，用 ALLOW_NO_TOOLCHAIN=1 跳过本检查。"
   fi
@@ -190,13 +229,13 @@ if command -v node >/dev/null 2>&1; then
 fi
 if [ "$NODE_OK" != "1" ]; then
   TC_DIR="$WORK/toolchain"
-  if [ ! -x "$TC_DIR/node-$KERNEL_NODE_VER-linux-arm64/bin/node" ]; then
+  if [ ! -x "$TC_DIR/node-$KERNEL_NODE_VER-linux-$NODE_ARCH/bin/node" ]; then
     mkdir -p "$TC_DIR"
-    fetch_and_verify "$TC_DIR/node.tar.gz" "node-$KERNEL_NODE_VER-linux-arm64.tar.gz" "${NODE_BASES[@]}"
+    fetch_and_verify "$TC_DIR/node.tar.gz" "node-$KERNEL_NODE_VER-linux-$NODE_ARCH.tar.gz" "${NODE_BASES[@]}"
     tar -xzf "$TC_DIR/node.tar.gz" -C "$TC_DIR"
     rm -f "$TC_DIR/node.tar.gz"
   fi
-  export PATH="$TC_DIR/node-$KERNEL_NODE_VER-linux-arm64/bin:$PATH"
+  export PATH="$TC_DIR/node-$KERNEL_NODE_VER-linux-$NODE_ARCH/bin:$PATH"
   ok "工具链 Node $(node --version) 就绪"
 fi
 
@@ -254,9 +293,9 @@ grep -q -- "FULL-OFFLINE" "$REPO_DIR/tools/install-plugins.sh" \
   请把 overlay/tools/install-plugins.sh 的内容覆盖到仓库的 tools/install-plugins.sh。"
 ok "源码就绪：$REPO_DIR（overlay 已校验，FORMAT=$FORMAT）"
 
-# ── ④ 补 upstream.lock.json 的 linux-arm64 Node 条目 ───────────────────
-say "④ 补 upstream.lock.json 的 nodeRuntime.linux-arm64 条目"
-NODE_TARBALL_NAME="node-$KERNEL_NODE_VER-linux-arm64.tar.gz"
+# ── ④ 补 upstream.lock.json 的 nodeRuntime.linux-<arch> 条目 ───────────
+say "④ 补 upstream.lock.json 的 nodeRuntime.linux-$NODE_ARCH 条目"
+NODE_TARBALL_NAME="node-$KERNEL_NODE_VER-linux-$NODE_ARCH.tar.gz"
 if ! fetch_first "$WORK/SHASUMS-node.txt" \
       "$NODE_MIRROR/$KERNEL_NODE_VER/SHASUMS256.txt" \
       "https://nodejs.org/dist/$KERNEL_NODE_VER/SHASUMS256.txt"; then
@@ -268,11 +307,12 @@ SHA256_KERNEL_NODE="$(grep -E "^[0-9a-f]{64}[[:space:]]+\*?${NODE_TARBALL_NAME}\
 rm -f "$WORK/SHASUMS-node.txt"
 if [ -z "$SHA256_KERNEL_NODE" ]; then
   die "SHASUMS256.txt 里没有 $NODE_TARBALL_NAME 的条目。
-  可能原因：$KERNEL_NODE_VER 没有 linux-arm64 构建，或清单格式变化。
+  可能原因：$KERNEL_NODE_VER 没有 linux-$NODE_ARCH 构建，或清单格式变化。
   可改用其它版本重试：KERNEL_NODE_VER=v22.20.0 bash $0"
 fi
 LOCK_FILE="$REPO_DIR/upstream.lock.json" \
 LOCK_VER="$KERNEL_NODE_VER" \
+LOCK_KEY="linux-$NODE_ARCH" \
 LOCK_ARCHIVE="$NODE_TARBALL_NAME" \
 LOCK_SHA="$SHA256_KERNEL_NODE" \
 node -e '
@@ -281,11 +321,11 @@ const file = process.env.LOCK_FILE
 const lock = JSON.parse(fs.readFileSync(file, "utf8"))
 lock.nodeRuntime = lock.nodeRuntime ?? {}
 if (lock.nodeRuntime.version !== process.env.LOCK_VER) lock.nodeRuntime.version = process.env.LOCK_VER
-lock.nodeRuntime["linux-arm64"] = { archive: process.env.LOCK_ARCHIVE, sha256: process.env.LOCK_SHA }
+lock.nodeRuntime[process.env.LOCK_KEY] = { archive: process.env.LOCK_ARCHIVE, sha256: process.env.LOCK_SHA }
 fs.writeFileSync(file, JSON.stringify(lock, null, 2) + "\n")
-console.log(`  ✅ nodeRuntime["linux-arm64"] = ${process.env.LOCK_ARCHIVE} (${process.env.LOCK_SHA.slice(0, 12)}...)`)
+console.log(`  ✅ nodeRuntime["${process.env.LOCK_KEY}"] = ${process.env.LOCK_ARCHIVE} (${process.env.LOCK_SHA.slice(0, 12)}...)`)
 '
-ok "upstream.lock.json 已补齐 linux-arm64"
+ok "upstream.lock.json 已补齐 linux-$NODE_ARCH"
 
 # ── ⑤ 安装 dsh 内核树（npm，走国内源）──────────────────────────────────
 say "⑤ 安装 dsh 内核树（联网，通常 5~25 分钟）"
@@ -385,7 +425,7 @@ if [ ! -f "$PTY_NODE" ]; then
     die "pty.node 缺失且未放行：node-pty 重编失败，检查 make/g++/python3"
   fi
 else
-  ok "node-pty 原生模块已编译（arm64）"
+  ok "node-pty 原生模块已编译（$ARCH）"
 fi
 cd "$REPO_DIR"
 PEER_N="$(ls -d "$REPO_DIR"/resources/kernel/node_modules/@deepseek-ai/* 2>/dev/null | wc -l || true)"
@@ -396,31 +436,36 @@ ok "依赖树完整性抽查：@deepseek-ai/* 共 $PEER_N 个（含内核与 pee
 #   version `GLIBCXX_3.4.xx' not found / `GLIBC_2.xx' not found
 # 这里把需求的最高符号版本打出来，供与目标机比对（不阻断构建，
 # 因为绝大多数情况下可在目标机本地重编解决）。
+# 各架构对应的系统库路径（用于上面的自查命令提示）
+case "$ARCH" in
+  amd64) SYS_LIB_DIR="/usr/lib/x86_64-linux-gnu" ;;
+  arm64) SYS_LIB_DIR="/usr/lib/aarch64-linux-gnu" ;;
+esac
 if [ -f "$PTY_NODE" ] && command -v objdump >/dev/null 2>&1; then
   NEED_GLIBC="$(objdump -p "$PTY_NODE" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*'   | sort -V | tail -1 || true)"
   NEED_CXX="$(objdump -p "$PTY_NODE" 2>/dev/null  | grep -o 'GLIBCXX_[0-9][0-9.]*' | sort -V | tail -1 || true)"
   ok "pty.node 需要的符号版本上限：${NEED_GLIBC:-无} / ${NEED_CXX:-无}"
-  cat <<'ABI'
+  cat <<ABI
 
-  ⚠ 构建机的 glibc/libstdc++ 若比目标机（Kylin V10）新，加载 pty.node 可能报
-    "version `GLIBCXX_x.x.xx' not found"。目标机上自查：
-      strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 | grep GLIBCXX | tail -1
+  ⚠ 构建机的 glibc/libstdc++ 若比目标机（如 Kylin V10）新，加载 pty.node 可能报
+    "version \`GLIBCXX_x.x.xx' not found"。目标机上自查：
+      strings $SYS_LIB_DIR/libstdc++.so.6 | grep GLIBCXX | tail -1
     若确实更旧，在目标机本地重编即可（用内核自带 Node，ABI 一致，无需重装包）：
       sudo apt install -y build-essential python3
-      cd /opt/deepseek-harness-desktop/resources/kernel
-      PATH="$PWD:$PATH" npm rebuild node-pty
+      cd <安装目录>/resources/kernel
+      PATH="\$PWD:\$PATH" npm rebuild node-pty
 ABI
 fi
 ok "dsh 内核树就绪（$(du -sh resources/kernel | cut -f1)）"
 
 # ── ⑥ 内核自带 Node 二进制 + npm/corepack 垫片 ─────────────────────────
-say "⑥ 放置内核专用 Node $KERNEL_NODE_VER（arm64）"
+say "⑥ 放置内核专用 Node $KERNEL_NODE_VER（$ARCH）"
 if [ ! -x "$REPO_DIR/resources/kernel/node" ]; then
   ND_STAGE="$WORK/node-dist"
   rm -rf "$ND_STAGE"; mkdir -p "$ND_STAGE"
   fetch_and_verify "$ND_STAGE/node.tar.gz" "$NODE_TARBALL_NAME" "${NODE_BASES[@]}"
   tar -xzf "$ND_STAGE/node.tar.gz" -C "$ND_STAGE"
-  ND_ROOT="$ND_STAGE/node-$KERNEL_NODE_VER-linux-arm64"
+  ND_ROOT="$ND_STAGE/node-$KERNEL_NODE_VER-linux-$NODE_ARCH"
   "$ND_ROOT/bin/node" --version | grep -q "$KERNEL_NODE_VER" || die "解包出的 node --version 不符"
   cp -a "$ND_ROOT/bin/node" "$REPO_DIR/resources/kernel/node"
   chmod 0755 "$REPO_DIR/resources/kernel/node"
@@ -443,8 +488,8 @@ ok "内核 Node 就绪"
 say "⑦ 下载运行时压缩包（Electron + Node，供包内嵌）"
 RELEASE="$REPO_DIR/release"
 mkdir -p "$RELEASE"
-BOOT_NODE_FILE="node-$BOOT_NODE_VER-linux-arm64.tar.gz"
-ELECTRON_FILE="electron-$ELECTRON_VER-linux-arm64.zip"
+BOOT_NODE_FILE="node-$BOOT_NODE_VER-linux-$NODE_ARCH.tar.gz"
+ELECTRON_FILE="electron-$ELECTRON_VER-linux-$NODE_ARCH.zip"
 [ -f "$RELEASE/$BOOT_NODE_FILE" ] || fetch_and_verify "$RELEASE/$BOOT_NODE_FILE" "$BOOT_NODE_FILE" \
   "$NODE_MIRROR/$BOOT_NODE_VER" "https://nodejs.org/dist/$BOOT_NODE_VER"
 [ -f "$RELEASE/$ELECTRON_FILE" ] || fetch_and_verify "$RELEASE/$ELECTRON_FILE" "$ELECTRON_FILE" \
@@ -456,22 +501,22 @@ say "⑧ 打包 full-offline（格式: $FORMAT）"
 VERSION="$(node -p "require('$REPO_DIR/package.json').version")"
 case "$FORMAT" in
   deb)
-    bash "$REPO_DIR/tools/build-deb.sh" arm64 "$VERSION" --full-offline
+    bash "$REPO_DIR/tools/build-deb.sh" "$ARCH" "$VERSION" --full-offline
     ;;
   both)
-    bash "$REPO_DIR/tools/build-tarball.sh" arm64 "$VERSION" --full-offline
-    bash "$REPO_DIR/tools/build-deb.sh" arm64 "$VERSION" --full-offline
+    bash "$REPO_DIR/tools/build-tarball.sh" "$ARCH" "$VERSION" --full-offline
+    bash "$REPO_DIR/tools/build-deb.sh" "$ARCH" "$VERSION" --full-offline
     ;;
   tar.gz|*)
-    bash "$REPO_DIR/tools/build-tarball.sh" arm64 "$VERSION" --full-offline
+    bash "$REPO_DIR/tools/build-tarball.sh" "$ARCH" "$VERSION" --full-offline
     ;;
 esac
 
 # ── ⑨ 产物报告 ────────────────────────────────────────────────────────
 say "⑨ 构建完成"
 shopt -s nullglob
-TB=( "$RELEASE"/DeepSeek-Harness-Desktop-*-full-offline-arm64.tar.gz )
-DEBS=( "$RELEASE"/DeepSeek-Harness-Desktop-*-full-offline-arm64.deb )
+TB=( "$RELEASE"/DeepSeek-Harness-Desktop-*-full-offline-$ARCH.tar.gz )
+DEBS=( "$RELEASE"/DeepSeek-Harness-Desktop-*-full-offline-$ARCH.deb )
 [ ${#TB[@]} -eq 0 ] && [ ${#DEBS[@]} -eq 0 ] && die "没有找到任何产物（打包失败？）"
 
 for f in "${TB[@]}"; do
@@ -481,7 +526,7 @@ for f in "${TB[@]}"; do
 
 目标机安装（普通用户即可，无需 root）：
   tar -xzf $(basename "$f")
-  cd deepseek-harness-desktop-${VERSION}-full-offline-arm64
+  cd deepseek-harness-desktop-${VERSION}-full-offline-${ARCH}
   bash install.sh                      # 默认装到 ~/.local/share/deepseek-harness-desktop
   # bash install.sh --prefix /data/dsh  # 或指定任意可写目录
   # bash install.sh --no-desktop        # 不建桌面图标
