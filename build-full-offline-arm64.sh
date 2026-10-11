@@ -44,7 +44,7 @@ ALLOW_NO_TOOLCHAIN="${ALLOW_NO_TOOLCHAIN:-0}"
 # 产物格式：tar.gz（默认，免 root 便携包）| deb | both
 FORMAT="${FORMAT:-tar.gz}"
 # 版本标记：日志第一行会打出来，用来确认 runner 上跑的是不是最新版
-KIT_VERSION="v2 · 2026-10-09（默认 tar.gz + 双源回退 + npm 双 registry 重试 + 失败定位）"
+KIT_VERSION="v2.1 · 2026-10-11（默认 tar.gz + 双源回退 + npm 双 registry 重试 + 失败定位 + node-pty 定点重编）"
 
 say()  { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '  ✅ %s\n' "$*"; }
@@ -312,15 +312,84 @@ done
 [ "$KERNEL_DONE" = "1" ] || die "dsh 内核树安装失败（已 3 轮 × 2 源）。请看上方 npm 报错或下载 debug-logs 制品。"
 [ -f "$REPO_DIR/resources/kernel/node_modules/@deepseek-ai/dsh/lib/bin.js" ] || die "内核安装后缺少 bin.js，安装失败"
 PTY_NODE="$REPO_DIR/resources/kernel/node_modules/node-pty/build/Release/pty.node"
-if [ -f "$PTY_NODE" ]; then
-  ok "node-pty 原生模块已编译（arm64）"
-else
-  if [ "$ALLOW_NO_TOOLCHAIN" = "1" ]; then
-    warn "pty.node 缺失——内核可启动，但终端 PTY 功能降级"
+
+# ── ⑤-b 修复 node-pty（关键）──────────────────────────────────────────
+# install-kernel.js 的**最后**一步是 installMissingPeers()，它会再跑一次 npm install。
+# 而 node-pty@1.1.0-beta7 是 installLinuxPty() 用 `--no-save` 装的（不在 payload
+# manifest 里），npm 把这种包视为「多余依赖」，于是那次 npm install 会把它换回 lock
+# 里的 1.1.0 —— 而 1.1.0 不带 src/unix/，编译产物 pty.node 随之消失。
+# 日志里的 "changed 1 package" 就是它。修复必须在 install-kernel.js 跑完之后做，
+# 且**不能再用 npm install**（否则上面装好的 27 个 peer 又会被剪掉）。
+repair_pty() {
+  local kdir="$REPO_DIR/resources/kernel"
+  local ptydir="$kdir/node_modules/node-pty"
+  local pd tgz ad atgz
+  cd "$kdir"
+  if [ -d "$ptydir/src/unix" ]; then
+    say2 "node-pty 源码仍是带 src/unix 的版本，直接重编"
   else
-    die "pty.node 缺失且未放行：node-pty 编译失败，检查 make/g++/python3"
+    VER_NOW="$(node -p "require('$ptydir/package.json').version" 2>/dev/null || echo 未知)"
+    say2 "node-pty 当前为 $VER_NOW（无 src/unix），取 1.1.0-beta7 源码覆盖后重编"
+    pd="$WORK/pty-src"; rm -rf "$pd"; mkdir -p "$pd"
+    ( cd "$pd" && npm pack node-pty@1.1.0-beta7 --silent ) || { warn "npm pack node-pty 失败"; return 1; }
+    tgz="$(ls "$pd"/node-pty-*.tgz 2>/dev/null | head -1 || true)"
+    [ -n "$tgz" ] || { warn "没找到 node-pty tarball"; return 1; }
+    tar -xzf "$tgz" -C "$pd"
+    rm -rf "$ptydir"
+    mv "$pd/package" "$ptydir"
+    # node-addon-api 是它唯一的构建依赖；缺了就手工解开，不用 npm install（避免剪掉 peer）
+    if [ ! -d "$kdir/node_modules/node-addon-api" ]; then
+      say2 "补齐构建依赖 node-addon-api（手工放置，不动依赖树）"
+      ad="$WORK/naa"; rm -rf "$ad"; mkdir -p "$ad"
+      ( cd "$ad" && npm pack node-addon-api@^7.1.0 --silent ) || true
+      atgz="$(ls "$ad"/node-addon-api-*.tgz 2>/dev/null | head -1 || true)"
+      if [ -n "$atgz" ]; then
+        tar -xzf "$atgz" -C "$ad" && mv "$ad/package" "$kdir/node_modules/node-addon-api"
+      fi
+    fi
   fi
+  # npm rebuild 只重跑生命周期脚本、不重解依赖树，所以 peer 依赖不会受影响。
+  # 注：beta7 的发布包里没有 install 脚本，npm 会依据 binding.gyp 自动跑 node-gyp；
+  # 若它没这么做，就用下面兜底的 node-gyp 直接编译。
+  npm rebuild node-pty || warn "npm rebuild node-pty 返回非 0，走 node-gyp 兜底"
+  if [ ! -f "$ptydir/build/Release/pty.node" ]; then
+    local ng candidates n
+    candidates=(
+      "$(npm root -g 2>/dev/null || true)/npm/node_modules/node-gyp/bin/node-gyp.js"
+      "$(dirname "$(readlink -f "$(command -v npm)" 2>/dev/null || echo)" 2>/dev/null || true)/../lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
+      "$(dirname "$(dirname "$(readlink -f "$(command -v npm)" 2>/dev/null || echo)" 2>/dev/null || true)" 2>/dev/null || true)/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
+    )
+    ng=""
+    for n in "${candidates[@]}"; do [ -f "$n" ] && { ng="$n"; break; }; done
+    if [ -n "$ng" ]; then
+      say2 "改用 node-gyp 直接编译：$ng"
+      ( cd "$ptydir" && node "$ng" rebuild )
+    else
+      warn "找不到 node-gyp，尝试 npx 在线获取（最后手段）"
+      ( cd "$ptydir" && npx --yes node-gyp rebuild ) || true
+    fi
+  fi
+  if [ -f "$ptydir/build/Release/pty.node" ]; then
+    say2 "编译产物：$(du -h "$ptydir/build/Release/pty.node" | cut -f1)"
+  fi
+  [ -f "$ptydir/build/Release/pty.node" ]
+}
+
+if [ ! -f "$PTY_NODE" ]; then
+  say "⑤-b 修复 node-pty（install-kernel 最后的 peer 补齐把它换回去了）"
+  if repair_pty; then
+    ok "pty.node 已重新编译：$(node -p "require('$REPO_DIR/resources/kernel/node_modules/node-pty/package.json').version")"
+  elif [ "$ALLOW_NO_TOOLCHAIN" = "1" ]; then
+    warn "pty.node 依旧缺失——已 ALLOW_NO_TOOLCHAIN=1 放行，终端 PTY 功能降级"
+  else
+    die "pty.node 缺失且未放行：node-pty 重编失败，检查 make/g++/python3"
+  fi
+else
+  ok "node-pty 原生模块已编译（arm64）"
 fi
+cd "$REPO_DIR"
+PEER_N="$(ls -d "$REPO_DIR"/resources/kernel/node_modules/@deepseek-ai/* 2>/dev/null | wc -l || true)"
+ok "依赖树完整性抽查：@deepseek-ai/* 共 $PEER_N 个（含内核与 peer 补齐的 27 个）"
 
 # ABI 兼容预检：原生模块链接的是「构建机」的 glibc / libstdc++，
 # 目标机（Kylin V10 ≈ Ubuntu 20.04 底座）更旧时会报
