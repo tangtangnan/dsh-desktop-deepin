@@ -108,7 +108,23 @@ detect() {
   elif have node; then NODE_BIN="$(command -v node)"
   else
     local c
+    # 候选顺序与 tools/bootstrap.sh 的 detect() 保持一致：系统级 → 版本管理器
+    # （nvm/fnm/volta/asdf/nvs/n）→ 用户级 → 第三方包管理器 → 自举私有目录。
+    # 两处必须是同一份名单，否则 bootstrap 装好的运行时 start-shell.sh 认不出，
+    # 表现为「下载完还是说缺 node」。glob 未匹配时保持原样，[ -x ] 自然跳过。
     for c in /usr/local/bin/node /usr/bin/node /usr/local/nodejs/bin/node \
+             /usr/local/node/bin/node /snap/bin/node \
+             /opt/node/bin/node /opt/nodejs/bin/node /opt/node-*/bin/node /opt/node*/bin/node \
+             /opt/apps/*/files/bin/node /opt/*/bin/node \
+             /home/linuxbrew/.linuxbrew/bin/node \
+             "${HOME}/.nvm/versions/node/"*/bin/node \
+             "${HOME}/.fnm/node-versions/"*/installation/bin/node \
+             "${HOME}/.volta/bin/node" \
+             "${HOME}/.asdf/installs/nodejs/"*/bin/node "${HOME}/.asdf/shims/node" \
+             "${HOME}/.nvs/"*/bin/node \
+             /usr/local/n/versions/node/*/bin/node \
+             "${HOME}/.local/share/pnpm/node" "${HOME}/.yarn/bin/node" \
+             "${HOME}/.local/bin/node" \
              "$RUNTIME_DIR"/node-*/bin/node; do
       [ -x "$c" ] && { NODE_BIN="$c"; break; }
     done
@@ -117,11 +133,35 @@ detect() {
   if [ -n "$cfg_d" ] && { [ -x "$cfg_d" ] || [ -f "$cfg_d" ]; }; then SYSTEM_DSH="$cfg_d"
   elif have dsh; then SYSTEM_DSH="$(command -v dsh)"
   else
-    local c
-    for c in /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
-             /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js; do
+    local c nd
+    # dsh 优先在「Node 所在的 bin 目录」里找：npm install -g 一定装到那里，
+    # 这也是 nvm 用户最常见的情况（真机实测 dsh 就在 ~/.nvm/versions/node/*/bin/dsh）。
+    nd=""
+    [ -n "$NODE_BIN" ] && nd="$(dirname "$NODE_BIN")"
+    for c in ${nd:+"$nd/dsh"} \
+             /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
+             /opt/nodejs/bin/dsh /opt/node/bin/dsh /opt/*/bin/dsh \
+             /snap/bin/dsh \
+             "${HOME}/.local/bin/dsh" "${HOME}/.yarn/bin/dsh" \
+             "${HOME}/.local/share/pnpm/dsh" \
+             "${HOME}/.nvm/versions/node/"*/bin/dsh \
+             "${HOME}/.volta/bin/dsh" \
+             "${HOME}/.asdf/shims/dsh"; do
       [ -e "$c" ] && { SYSTEM_DSH="$c"; break; }
     done
+    # 已装 dsh 但不在 PATH：再用常见全局 node_modules 目录探一次，覆盖
+    # pnpm/yarn/版本管理器把包装到别处的情况。
+    if [ -z "$SYSTEM_DSH" ] && [ -n "$NODE_BIN" ]; then
+      local nd2="${NODE_BIN%/bin}"
+      for c in "${nd2}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js" \
+               /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               "${HOME}/.nvm/versions/node/"*/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               "${HOME}/.local/share/pnpm/global/"*/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               "${HOME}/.volta/tools/image/packages/@deepseek-ai/dsh/lib/bin.js"; do
+        [ -f "$c" ] && { SYSTEM_DSH="$c"; break; }
+      done
+    fi
   fi
 }
 

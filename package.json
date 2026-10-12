@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-deepin",
   "productName": "DeepSeek Harness Desktop",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "description": "Deepin/UOS desktop shell for the DeepSeek Harness (dsh) agent runtime — community-maintained Linux build of the official desktop shell.",
   "license": "MIT",
   "type": "module",
@@ -29,7 +29,8 @@
     "typecheck": "tsc --noEmit",
     "kernel:install": "node tools/install-kernel.js && node tools/install-node.js && node tools/prune-kernel.js",
     "scan:leaks": "node tools/scan-leaks.js",
-    "prepack:app": "npm run test && npm run typecheck && npm run scan:leaks",
+    "check:runtime-paths": "bash tools/check-runtime-paths.sh",
+    "prepack:app": "npm run test && npm run typecheck && npm run scan:leaks && npm run check:runtime-paths",
     "dist": "npm run dist:linux",
     "dist:linux": "npm run prepack:app && bash tools/build-deb.sh",
     "dist:linux:deb": "npm run dist:linux",

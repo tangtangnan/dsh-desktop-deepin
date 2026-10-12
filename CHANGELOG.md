@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.17] — 2026-10-12
+
+### 修复
+
+- **start-shell.sh 也认不到 NVM 的 Node（[#1](https://github.com/westanke/dsh-desktop-deepin/issues/1) 的第二处缺口）**。
+  上一版（0.2.16）修了 Electron 内探针只读 login shell 的问题，但启动入口 `.desktop` 实际是
+  `Exec=bash /opt/deepseek-harness-desktop/start-shell.sh`，而这个 shell 脚本自己另有一套
+  Node 候选扫描——候选列表只有 `/usr/local/bin/node`、`/usr/bin/node`、
+  `/usr/local/nodejs/bin/node` 和私有 runtime，**同样没有 NVM 路径**。结果是 Electron
+  还没启动，start-shell.sh 在「三个运行时是否齐备」那一步就把 NVM 的 Node 判成缺失，转而
+  走 bootstrap 自举下载。
+  现已把候选名单与 `tools/bootstrap.sh` 的 `detect()` 对齐，两者同一份：
+  nvm / fnm / volta / asdf（含 shims）/ nvs / n，以及 linuxbrew、pnpm、yarn、snap、
+  `/opt/node*` 等位置；dsh 内核也新增「先在 Node 所在 bin 目录找」与全局 node_modules
+  兜底两类候选，覆盖通过版本管理器 `npm install -g` 的安装。
+- **新增一致性校验 `npm run check:runtime-paths`**，并接入 `prepack:app` 门禁。它断言
+  start-shell.sh 与 bootstrap.sh 都包含全部版本管理器模式，任一处遗漏直接让打包失败——
+  这次的两处漂移就是因为没有这个守卫才漏到了用户手里。
+
+### 与 0.2.16 的关系
+
+0.2.16 修的是 Electron 主进程里 `login-shell-environment.js` 的双模式 shell 探针
+（决定内核进程拿到的 PATH）；0.2.17 修的是它**之前**那一步——start-shell.sh 决定能否
+启动 Electron、是否触发首启下载。两处是同一条启动链上的两道独立的「Node 在不在」检查，
+缺一不可。
+
 ## [0.2.16] — 2026-10-12
 
 ### 修复
