@@ -24,13 +24,62 @@ ok()   { printf '  ✅ %s\n' "$*"; }
 bad()  { printf '  ❌ %s\n' "$*"; }
 info() { printf '  · %s\n' "$*"; }
 
+# ── PATH 自救 + 内核真伪判据 ──────────────────────────────────────────
+# 桌面壳会把「启动壳自己」的命令发布成 ~/.local/bin/dsh（见 src/cli-command.js），
+# 那是一个百来字节的 sh shim：exec '<electron>' '<壳目录>/src' --profile web。
+# 它与真内核同名，而 ~/.local/bin 常排在 PATH 最前 —— 于是 `command -v dsh`
+# 命中的是壳自己，拿它去跑 `plugin list` 等于让壳再拉起一个壳。
+# 判据取「文件很小 + 出现 electron」同时成立：只按关键词筛会误伤真内核
+# （/usr/local/nodejs/bin/dsh 指向的 bin.js 里同样出现 electron 字样）。
+is_desktop_shell_shim() {
+  local f="${1:-}" size
+  [ -n "$f" ] || return 1
+  [ -f "$f" ] || return 1
+  size="$(wc -c <"$f" 2>/dev/null || echo 0)"
+  [ "${size:-0}" -lt 4096 ] || return 1
+  grep -q 'electron' "$f" 2>/dev/null
+}
+
+# PATH 自救。本脚本有三个调用入口，PATH 一个比一个贫瘠：
+#   1) postinst 经 runuser 后台预热 —— root 的 PATH，没有用户级目录；
+#   2) start-shell.sh 在 GUI 会话里调用 —— 会话 PATH，常常没有 node 的 bin 目录；
+#   3) 用户手动跑 —— 终端 PATH，通常正常。
+# 前两种下 command -v pnpm/npm/corepack 会一起落空，报「没有 pnpm，且自动
+# 安装失败」。故在探测任何东西之前先补 PATH。只**追加**在末尾，不抢用户已有
+# 命令的优先级；~/.local/bin 故意不补 —— 那里躺着桌面壳 shim，补进来只会让
+# `command -v dsh` 继续误中它。
+ensure_node_bin_on_path() {
+  local d
+  for d in "${DSH_NODE_BIN:-}" /usr/local/nodejs/bin /usr/local/bin /usr/bin \
+           /usr/local/node/bin /opt/nodejs/bin /opt/node/bin /snap/bin \
+           "${HOME}/.local/share/pnpm"; do
+    [ -n "$d" ] || continue
+    { [ -x "$d/node" ] || [ -x "$d/pnpm" ] || [ -x "$d/npm" ]; } || continue
+    case ":$PATH:" in
+      *":$d:"*) ;;
+      *) PATH="$PATH:$d" ;;
+    esac
+  done
+  export PATH
+}
+ensure_node_bin_on_path
+
 # ── 找 dsh 可执行文件 ─────────────────────────────────────────────────
+# 优先级遵循「以 start-shell.sh 探测到的为准」：
+#   1) $DSH_KERNEL_BIN —— start-shell.sh 已解析并校验过的内核，最权威。
+#      真机曾出现两处不一致：本脚本打印「使用内核: /home/wangke/.local/bin/dsh」
+#      而 start-shell.sh 打印「dsh : /usr/local/nodejs/bin/dsh」，就是漏了这条传递。
+#   2) PATH 里的 dsh —— 必须验真，跳过桌面壳 shim；
+#   3) 常见安装位（补上 /opt 与版本管理器，与 start-shell.sh 的名单对齐）。
 DSH_BIN=""
-for c in "$(command -v dsh 2>/dev/null)" \
+for c in "${DSH_KERNEL_BIN:-}" "$(command -v dsh 2>/dev/null)" \
          /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
+         /usr/local/node/bin/dsh /opt/nodejs/bin/dsh /opt/node/bin/dsh \
          "${HOME}/.nvm/versions/node/"*/bin/dsh \
+         "${HOME}/.volta/bin/dsh" "${HOME}/.asdf/shims/dsh" \
+         "${HOME}/.local/share/pnpm/dsh" \
          "${HOME}/.config/dsh-desktop/bin-shims/dsh"; do
-  [ -n "$c" ] && [ -x "$c" ] && { DSH_BIN="$c"; break; }
+  [ -n "$c" ] && [ -x "$c" ] && ! is_desktop_shell_shim "$c" && { DSH_BIN="$c"; break; }
 done
 if [ -z "$DSH_BIN" ]; then
   say "未找到 dsh，跳过默认插件安装（内核装好后会再触发）。"
@@ -52,9 +101,12 @@ ensure_pnpm() {
   p="$(command -v pnpm 2>/dev/null || true)"
   if [ -n "$p" ]; then PNPM_BIN="$p"; info "pnpm: $p"; return 0; fi
 
-  # 2) 与 dsh（即 node）同目录，以及几个常见位置——命中即复用，零下载
+  # 2) 与 dsh（即 node）同目录，以及几个常见位置——命中即复用，零下载。
+  #    同目录这条最关键：/usr/local/nodejs/bin/dsh 与 pnpm 是邻居，只要
+  #    DSH_BIN 选对了真内核，即使 PATH 里什么都没有也能就地复用 pnpm。
   ndir="$(dirname "$DSH_BIN")"
-  for p in "$ndir/pnpm" /usr/local/bin/pnpm /usr/bin/pnpm \
+  for p in "$ndir/pnpm" /usr/local/nodejs/bin/pnpm /usr/local/bin/pnpm /usr/bin/pnpm \
+           /usr/local/node/bin/pnpm /opt/nodejs/bin/pnpm /opt/node/bin/pnpm \
            "${HOME}/.local/bin/pnpm" "${HOME}/.local/share/pnpm/pnpm"; do
     if [ -x "$p" ]; then
       export PATH="$(dirname "$p"):$PATH"
@@ -122,8 +174,10 @@ ensure_pnpm() {
 # ── 默认插件清单（npm 真实包名）──────────────────────────────────────────
 # 注意：dsh-market 在 npm 上的包名是无连字符的 dshmarket；
 # dsh-im 的 npm 包名是 scoped 的 @xmanrui/dsh-im。
+# dsh-remote-bridge 自 0.2.18 起取代 dsh-pocket-relay：两者都做远程访问，
+# 但前者是本项目自研并持续维护的那一个（用户侧已计划卸载 pocket-relay）。
 # 安装命令：dsh plugin --profile web add <包名>（--profile 是必填全局选项）。
-PLUGINS=("@xmanrui/dsh-im" dsh-pocket-relay dsh-mcp-panel dshmarket)
+PLUGINS=("@xmanrui/dsh-im" dsh-remote-bridge dsh-mcp-panel dshmarket)
 
 # 已装清单（一次查询，循环里查子串）。
 # 语序实测：`dsh plugin --profile web ...` 正确（--profile 跟在 plugin 后）；
@@ -169,7 +223,7 @@ fi
 
 say ""
 say "════════════════════════════════════════════════════════════════════════════════════════════════════════════"
-say " 默认插件安装（dsh-im / pocket-relay / mcp-panel / market）"
+say " 默认插件安装（dsh-im / remote-bridge / mcp-panel / market）"
 say "══════════════════════════════════════════════════════════════════════════════════════════════════════════"
 
 fail=0
