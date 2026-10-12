@@ -51,7 +51,7 @@ FORMAT="${FORMAT:-tar.gz}"
 # 目标架构：amd64 | arm64 | auto（默认 auto = 按当前机器 uname -m 判定）
 ARCH="${ARCH:-auto}"
 # 版本标记：日志第一行会打出来，用来确认 runner 上跑的是不是最新版
-KIT_VERSION="v3.0 · 2026-10-11（amd64/arm64 双架构 + 默认 tar.gz + 双源回退 + npm 双 registry 重试 + 失败定位 + node-pty 定点重编）"
+KIT_VERSION="v3.1 · 2026-10-12（双架构 + bootstrap.sh locate() 离线分支崩溃修补）"
 
 say()  { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '  ✅ %s\n' "$*"; }
@@ -292,6 +292,23 @@ grep -q -- "FULL-OFFLINE" "$REPO_DIR/tools/install-plugins.sh" \
   || die "tools/install-plugins.sh 不是增强版（缺 FULL-OFFLINE 标记）。
   请把 overlay/tools/install-plugins.sh 的内容覆盖到仓库的 tools/install-plugins.sh。"
 ok "源码就绪：$REPO_DIR（overlay 已校验，FORMAT=$FORMAT）"
+
+# ── ③-b 修补上游 bootstrap.sh 的 locate() 单参调用 bug ────────────────
+# 上游离线分支（install_node / install_electron 的 try_offline_unpack 成功后）
+# 用 1 个参数调 locate()，而 locate() 在 set -u 下强制读 $2 → 崩溃，
+# 导致「Electron 其实已离线就位」却误判缺失、转而去联网下载。
+say "③-b 修补上游 bootstrap.sh（locate() 单参调用在 set -u 下崩溃）"
+BS="$REPO_DIR/tools/bootstrap.sh"
+[ -f "$BS" ] || die "tools/bootstrap.sh 不存在，仓库结构可能已变化"
+sed -i \
+  -e 's|locate "$RUNTIME_DIR"/node-${NODE_WANT}-linux-\*/bin/node|locate "" node "$RUNTIME_DIR"/node-${NODE_WANT}-linux-*/bin/node|' \
+  -e 's|locate "$RUNTIME_DIR"/electron-${ELECTRON_WANT}/electron|locate "" electron "$RUNTIME_DIR"/electron-${ELECTRON_WANT}/electron|' \
+  "$BS"
+if grep -q 'locate "" node' "$BS" && grep -q 'locate "" electron' "$BS"; then
+  ok "bootstrap.sh 已修补（离线分支不再误触联网下载）"
+else
+  warn "bootstrap.sh 修补未命中——上游可能已改版，请人工核对 tools/bootstrap.sh 的 locate( 调用"
+fi
 
 # ── ④ 补 upstream.lock.json 的 nodeRuntime.linux-<arch> 条目 ───────────
 say "④ 补 upstream.lock.json 的 nodeRuntime.linux-$NODE_ARCH 条目"
