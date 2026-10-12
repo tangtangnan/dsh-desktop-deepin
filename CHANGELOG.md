@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.16] — 2026-10-12
+
+### 修复
+
+- **NVM 装的 Node 找不到了，启动报「环境没准备好」**（[#1](https://github.com/westanke/dsh-desktop-deepin/issues/1)）。
+  Deepin 25 上用 NVM 装过 Node 再安装本壳，启动一直卡在「环境没准备好」，PATH 与常规目录里
+  都扫不到 Node。根因是启动前读用户 shell 环境的探针只跑 `-ilc`：`-l` 让 bash 成为 login
+  shell，读的是 `~/.profile` / `/etc/profile`，**不读 `~/.bashrc`**；而 NVM 安装器只把
+  `export PATH="$NVM_DIR/versions/node/vXX/bin:$PATH"` 写进 `~/.bashrc`，于是那唯一一个 Node
+  对探针隐身。Deepin 的 `~/.bashrc` 开头还有 `case $- in *i*)` 交互保护，非交互直接 return，
+  进一步坐实了这一点。
+  现对每个候选 shell 跑两种模式——`-ilc` 读 login 启动文件、`-ic` 读 `~/.bashrc`——结果合并，
+  交互模式后应用故在两者都设的键上胜出。一并修掉：收到 abort/timeout 时原先只中断内层、还会
+  继续试后续 shell 白记失败，现直接返回。
+  实测（合成 HOME 复现 NVM 布局）：`-ilc` 下 `~/.bashrc` 不执行、PATH 无 NVM 目录；`-ic` 下
+  两者皆达成。对无 NVM 的机器无行为变化——两个文件读到的变量一致时合并结果相同。代价是每个
+  shell 多跑一次探针，最坏多一次超时（可用 `DSH_DESKTOP_LOGIN_SHELL_TIMEOUT_MS` 调）。
+  新增 2 个回归测试，用真实 bash 加合成 HOME 驱动而非 mock：改回单模式立即失败。
+
 ## [0.2.15] — 2026-10-07
 
 ### 新增
