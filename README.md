@@ -97,10 +97,10 @@ deb 里**只有壳的代码**，不含 Electron（约 364 MB）、Node（约 25 
 |---|---|
 | **dsh-im** | 把 agent 接进你已经在用的聊天软件——飞书、微信、企业微信、钉钉、QQ、Slack、Telegram、Discord、WhatsApp 共 9 个通道，扫码或凭据即可接入。人不必坐在电脑前，在 IM 里就能使唤 agent |
 | **dshmarket** | 内置可视化插件市场：浏览、搜索、一键安装。想再要点什么，不必去记 npm 包名 |
-| **dsh-pocket-relay** | 把 DSH 装进口袋：局域网扫码直连，或经自建 relay 中继随时随地远程访问；设备级认证、多机共存与热备、实时同屏 |
+| **dsh-remote-bridge** | 把 DSH 桥接给可信客户端：聊天、文件、设备等远程访问都走带版本的 REST 接口，并在 WebUI 设置里带一个「手机设置」面板 |
 | **dsh-mcp-panel** | MCP 管理控制台：`/mcp` 查看各 MCP 服务器的健康状态与连接诊断；设置页带服务器增删改（写入需审批、自动备份）与工具试调用台 |
 
-**为什么值得默认装**：这四个恰好覆盖「能远程使唤」（`dsh-im` / `dsh-pocket-relay`）、
+**为什么值得默认装**：这四个恰好覆盖「能远程使唤」（`dsh-im` / `dsh-remote-bridge`）、
 **能自己找插件**（`dshmarket`）、**出问题能自己诊断**（`dsh-mcp-panel`）四件刚需——
 装完就有，不必先知道它们存在。补装/强制重装见下文「推荐插件」。
 
@@ -244,7 +244,7 @@ sudo apt remove deepseek-harness-desktop
 | 插件 | 干什么 | 链接 |
 |---|---|---|
 | **dsh-im** | 把微信、飞书、企业微信、钉钉、QQ、Telegram、WhatsApp、Slack、Discord、Matrix 等 IM 接入 DSH——在聊天软件里直接使唤你的 agent | [xmanrui/dsh-im](https://github.com/xmanrui/dsh-im) |
-| **dsh-pocket-relay** | 把 DSH 装进口袋：局域网扫码直连，或经自建 relay 中继随时随地远程访问（设备级认证、多机共存与热备、实时同屏） | [kinderao/dsh-pocket-relay](https://github.com/kinderao/dsh-pocket-relay) |
+| **dsh-remote-bridge** | 把 DSH 桥接给可信客户端：聊天、文件、设备等远程访问走带版本的 REST 接口，并在 DSH WebUI 里提供「手机设置」面板 | [westanke/dsh-remote-bridge](https://github.com/westanke/dsh-remote-bridge) |
 | **dsh-mcp-panel** | MCP 管理控制台：`/mcp` 命令查看 MCP 服务器健康状态、诊断连接问题 | [PerryLink/dsh-mcp-panel](https://github.com/PerryLink/dsh-mcp-panel) |
 | **dshmarket** | 内置可视化插件市场：浏览、搜索、一键安装社区插件 | [dsh-market/dsh-market](https://github.com/dsh-market/dsh-market) |
 
@@ -270,7 +270,7 @@ bash /opt/deepseek-harness-desktop/tools/install-plugins.sh force    # 全部重
 | 固定端口 | `src/main.js` `preferredPort` | 默认 `19387`（官方同款）；被占用则自动退回随机端口 |
 | 崩溃报告 | `src/diagnostics.js` | 写 `userData/logs/crash-<UTC>-<来源>.log`，保留最新 10 份，输出限 64 KiB；目录 0700 文件 0600，`wx` 拒绝覆盖 |
 | 崩溃恢复对话框 | `src/fatal-recovery.js` | 先落盘报告再弹窗（上限 1 秒）；详情截 1200 字留末 8 行、按码点切不截断代理对；三分支按钮，恢复失败重新询问而非退出；一次进程只弹一次 |
-| 终端里也能用 | `src/login-shell-environment.js` `src/cli-command.js` | GUI 启动只继承会话管理器变量，所以启动前读一次登录 shell（`-ilc` + NUL 定界，10 秒上限，失败即回落继承环境）；`dsh` 命令可装到 `~/.local/bin`，带指纹记账，只动能证明是自己装的那一个 |
+| 终端里也能用 | `src/login-shell-environment.js` `src/cli-command.js` | GUI 启动只继承会话管理器变量，所以启动前读一次登录 shell（`-ilc` + NUL 定界，10 秒上限，失败即回落继承环境）；`dsh-desktop` 命令可装到 `~/.local/bin`，带指纹记账，只动能证明是自己装的那一个。0.2.19 起它不再叫 `dsh`——内核 CLI 的名字必须留给内核 |
 | 多个内核 Home | `src/dsh-home-manager.js` | 可登记多个 `DSH_HOME` 并在托盘切换；注册表存 `userData/dsh-homes.json`，刻意放在所有 Home 之外 |
 | 命令行指定 Home | `src/dsh-home-manager.js` | `--dsh-home=<路径>` 直接用某个目录启动，优先级高于一切 remembered 选择；适合做多个快捷方式 |
 

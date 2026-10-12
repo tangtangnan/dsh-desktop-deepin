@@ -1,9 +1,14 @@
 /**
- * Installs the `dsh` command for the user's shell, reversibly.
+ * Installs the shell's own terminal entry point, reversibly.
  *
- * The shell runs `dsh` from `PATH`, so a desktop install is only half useful:
- * a terminal opened next to it cannot talk to it. This publishes the command on
- * `PATH` and takes it back out again without leaving anything behind.
+ * The kernel's CLI already owns the name `dsh`. A desktop install is still only
+ * half useful without an entry point of its own — a terminal opened next to the
+ * shell cannot reach it — so the *shell launcher* is published under a name of
+ * its own, `dsh-desktop`. It was published as `dsh` up to 0.2.18, which
+ * shadowed the kernel CLI wherever `~/.local/bin` precedes the Node bin
+ * directory on `PATH`; this project's own `tools/install-plugins.sh` then
+ * resolved the shell launcher as if it were the kernel and reported a missing
+ * pnpm. {@link LEGACY_COMMAND_NAMES} exists to hand that name back.
  *
  * The governing constraint is that a user's `PATH` is not ours. Whatever is
  * already there belongs to them — a distro package, an nvm install, a manual
@@ -30,7 +35,20 @@ import { dirname, join } from 'node:path'
 const RECEIPT_NAME = '.dsh-desktop-command.json'
 
 /** Command name published on `PATH`. */
-export const COMMAND_NAME = 'dsh'
+export const COMMAND_NAME = 'dsh-desktop'
+
+/**
+ * Command names earlier releases published, kept only so the shell can take
+ * them back.
+ *
+ * 0.2.18 and before used `dsh` — the name the kernel's own CLI owns. Wherever
+ * `~/.local/bin` comes before the Node bin directory on `PATH`, that link
+ * shadowed the kernel for *every* lookup, including this project's own
+ * `tools/install-plugins.sh`; the symptom was a plugin install that reported
+ * "no pnpm" while `pnpm` sat right next to the real `dsh`. Nothing is ever
+ * published under these names again.
+ */
+export const LEGACY_COMMAND_NAMES = Object.freeze(['dsh'])
 
 /**
  * @typedef {object} CommandFingerprint
@@ -306,6 +324,40 @@ export async function uninstallCommand({ directory = commandDirectory() } = {}) 
   await rm(join(directory, `.${COMMAND_NAME}-launcher`), { force: true }).catch(() => undefined)
   await rm(join(directory, RECEIPT_NAME), { force: true })
   return { ok: true }
+}
+
+/**
+ * Takes back a link an earlier release published under a legacy name.
+ *
+ * Only a link whose fingerprint still matches the receipt is removed: if the
+ * user repointed or replaced it in the meantime, the path is theirs now and
+ * stays untouched — the same rule every other operation in this module follows.
+ * The receipt is cleared once it describes nothing of ours, so a later
+ * {@link describeCommand} reports the current name honestly instead of calling
+ * this install stale.
+ *
+ * @param {object} [options]
+ * @param {string} [options.directory] - defaults to {@link commandDirectory}
+ * @returns {Promise<string[]>} the legacy link paths that were removed
+ */
+export async function reclaimLegacyCommands({ directory = commandDirectory() } = {}) {
+  const receipt = await readReceipt(directory)
+  if (receipt === null) return []
+  const isLegacy = LEGACY_COMMAND_NAMES.some((name) => join(directory, name) === receipt.link)
+  if (!isLegacy) return []
+  const current = await fingerprintLink(receipt.link)
+  if (current === null) {
+    // Already gone: the receipt names nothing, so drop the record rather than
+    // leave one that makes the next run look stale.
+    await rm(join(directory, RECEIPT_NAME), { force: true })
+    return []
+  }
+  if (!fingerprintMatches(receipt.fingerprint, current)) return []
+  await unlink(receipt.link)
+  const name = receipt.link.slice(receipt.link.lastIndexOf('/') + 1)
+  await rm(join(directory, `.${name}-launcher`), { force: true }).catch(() => undefined)
+  await rm(join(directory, RECEIPT_NAME), { force: true })
+  return [receipt.link]
 }
 
 /**

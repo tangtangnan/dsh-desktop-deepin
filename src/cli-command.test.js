@@ -17,6 +17,7 @@ import {
   fingerprintMatches,
   installCommand,
   readReceipt,
+  reclaimLegacyCommands,
   resolvesInside,
   uninstallCommand,
 } from './cli-command.js'
@@ -139,6 +140,57 @@ describe('uninstallCommand', () => {
     await rm(join(dir, COMMAND_NAME))
     const result = await uninstallCommand({ directory: dir })
     assert.equal(result.ok, true, 'an absent link means removed, not failed')
+    assert.equal(await readReceipt(dir), null)
+  })
+})
+
+describe('reclaimLegacyCommands', () => {
+  // 手工摆出「0.2.18 及以前留下的现场」：旧名字的链接 + 与之匹配的记账。
+  // installCommand 现在只会发布 COMMAND_NAME，所以旧名字只能这样构造。
+  /** @param {string} dir @param {string} [legacyName] @returns {Promise<string>} */
+  async function installLegacy(dir, legacyName = 'dsh') {
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(dir, { recursive: true })
+    const link = join(dir, legacyName)
+    await symlink(target, link)
+    const fingerprint = await fingerprintLink(link)
+    await writeFile(
+      join(dir, '.dsh-desktop-command.json'),
+      `${JSON.stringify({ link, target, fingerprint, installedAt: new Date().toISOString() }, null, 2)}\n`,
+    )
+    return link
+  }
+
+  it('takes back the `dsh` link an earlier release published', async () => {
+    const dir = join(workspace, 'reclaim-legacy')
+    const link = await installLegacy(dir)
+    assert.deepEqual(await reclaimLegacyCommands({ directory: dir }), [link])
+    // 内核的命令名必须还回去：链接没了，记账也随之清掉。
+    assert.equal(await fingerprintLink(link), null)
+    assert.equal(await readReceipt(dir), null)
+  })
+
+  it('leaves a legacy link the user has since repointed alone', async () => {
+    const dir = join(workspace, 'reclaim-repointed')
+    const link = await installLegacy(dir)
+    await rm(link)
+    await symlink('/usr/bin/theirs', link)
+    assert.deepEqual(await reclaimLegacyCommands({ directory: dir }), [])
+    assert.equal(await readlink(link), '/usr/bin/theirs')
+  })
+
+  it('ignores a receipt that already names the current command', async () => {
+    const dir = join(workspace, 'reclaim-current')
+    assert.equal((await installCommand({ target, directory: dir })).ok, true)
+    assert.deepEqual(await reclaimLegacyCommands({ directory: dir }), [])
+    assert.ok((await fingerprintLink(join(dir, COMMAND_NAME))) !== null, '当前名字的链接必须保留')
+  })
+
+  it('clears a receipt whose legacy link is already gone', async () => {
+    const dir = join(workspace, 'reclaim-gone')
+    const link = await installLegacy(dir)
+    await rm(link)
+    assert.deepEqual(await reclaimLegacyCommands({ directory: dir }), [])
     assert.equal(await readReceipt(dir), null)
   })
 })

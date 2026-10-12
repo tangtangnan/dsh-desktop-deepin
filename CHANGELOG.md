@@ -6,6 +6,70 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.19] — 2026-10-12
+
+### 变更
+
+- **壳的终端入口不再占用内核的名字：`dsh` → `dsh-desktop`**。托盘里那个
+  「在终端里可用 `dsh` 命令」的开关，发布的是**壳启动器**（Electron + 壳目录
+  `--profile web`，靠单实例锁激活已开着的窗口），却用了内核 CLI 的名字 `dsh`。
+  在 `~/.local/bin` 排于 Node bin 目录之前的机器上，这条链接会遮住内核：任何
+  `command -v dsh` 拿到的都是壳——本项目自己的 `tools/install-plugins.sh` 就是
+  这么把壳 shim 当成内核、进而报「没有 pnpm」。0.2.18 从另一侧加了内核真伪判据，
+  这一版从源头把名字还回去。
+  发布名现在由 `src/cli-command.js` 的 `COMMAND_NAME` 决定；旧名收在
+  `LEGACY_COMMAND_NAMES` 里，只用于回收，不再发布。
+
+### 修复
+
+- **已装机器上的旧 `dsh` 链接自动回收**。新增 `reclaimLegacyCommands()`：启动时
+  检查记账（receipt），只在链接指纹仍与记账一致时删除旧名字的链接，随后按新名字
+  `dsh-desktop` 重新发布，终端入口不中断；用户自己重指向或替换过的链接一律不碰，
+  记账也会在不再描述我们的链接时清掉，免得后续状态显示成 `stale`。托盘文案同步
+  改为「`dsh-desktop` 命令：…」。新增 4 条单测覆盖：正常回收、用户改过不动、
+  当前名字不受影响、链接已消失时清理记账。
+
+## [0.2.18] — 2026-10-12
+
+### 修复
+
+- **GUI 会话启动时报「没有 pnpm，且自动安装失败」，推荐插件一个都装不上**。
+  根因是**两条**叠在一起，此前只看到了其中一条：
+  1. 壳的「在终端里可用 `dsh` 命令」托盘功能会把启动命令发布成 `~/.local/bin/dsh`，
+     那是一个 136 字节的 sh shim（`exec <electron> <壳目录>/src --profile web`）。
+     它与内核 `dsh` 同名，而 `~/.local/bin` 通常排在 `PATH` 最前，于是
+     `command -v dsh` 命中的是壳自己。**这与 PATH 是否完整无关**——实测在 PATH
+     完整的登录 shell 里同样被抢占。拿壳 shim 当内核，`install-plugins.sh` 的
+     `plugin list` 等于让壳再拉起一个壳；日志里那句
+     「使用内核: /home/wangke/.local/bin/dsh」就是它。
+  2. DDE 等 GUI 会话里的 bash 是非交互非登录的，不读 `~/.bashrc`，因此
+     `/usr/local/nodejs/bin` 缺席，`pnpm` / `npm` / `corepack` 全部不可见，
+     `ensure_pnpm()` 的四层兜底（PATH → dsh 同目录 → corepack → npm）一起塌。
+
+  修复分三处，原则是「以 `start-shell.sh` 探测到的内核为准」：
+  - `start-shell.sh` 新增 `is_desktop_shell_shim()`。判据取「文件 < 4096 字节
+    **且** 含 electron」同时成立：只按关键词筛会误伤真内核——
+    `/usr/local/nodejs/bin/dsh` 指向的 `bin.js`（11 KB）里同样出现 electron 字样。
+    `detect()` 三处加判据，连配置文件里存的路径也验真，验不过就回退重探、并由
+    回填逻辑纠正。
+  - `start-shell.sh` 新增 `ensure_node_bin_on_path()`，在**任何探测之前**把确实带
+    node 工具链的目录补回 `PATH`。只**追加**在末尾，不抢用户已有命令的优先级。
+  - 插件块前显式 `export DSH_KERNEL_BIN="${SYSTEM_DSH:-}"`；`install-plugins.sh`
+    优先采用它，其次才轮到 `PATH` 里的 dsh（同样必须通过判真），并自带 PATH 自救
+    （故意不补 `~/.local/bin`——那里躺着壳 shim）。
+
+- **新增 4 条防回归断言并接入 `npm run check:runtime-paths`**：两个脚本都必须具备
+  内核真伪判据、PATH 兜底必须早于第一次 `detect`、内核路径必须经 `DSH_KERNEL_BIN`
+  传递、`install-plugins.sh` 必须通过语法检查。真机验证：沙箱三用例（配置被污染成
+  壳 shim / 配置全空 + GUI 式 PATH / 对照）全部回退到真内核；`install-plugins.sh`
+  在三种 PATH 场景下都打印「使用内核: /usr/local/nodejs/bin/dsh」。
+
+### 变更
+
+- **默认插件清单：`dsh-pocket-relay` → `dsh-remote-bridge`**。两者都做远程访问，
+  但 `dsh-remote-bridge` 是本项目自研并持续维护的那一个。已装 `dsh-pocket-relay`
+  的机器不会因此被卸载——查重只认「在不在」，清单只负责补装缺失项。
+
 ## [0.2.17] — 2026-10-12
 
 ### 修复

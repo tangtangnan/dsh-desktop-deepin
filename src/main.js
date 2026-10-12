@@ -23,7 +23,7 @@ import { errorPageHtml, loadingPageHtml } from './loading-page.js'
 import { getConfig, isInstalledLaunch } from './config.js'
 import { buildKernelArgs, buildKernelEnv, isSupportedNodeVersion } from './kernel-runtime.js'
 import { readLoginShellEnvironment, resolveLoginShellConfig } from './login-shell-environment.js'
-import { describeCommand, installCommand, uninstallCommand } from './cli-command.js'
+import { COMMAND_NAME, describeCommand, installCommand, reclaimLegacyCommands, uninstallCommand } from './cli-command.js'
 import { familyMarkerEnv, markerValueFor, reapOrphans } from './orphan-reaper.js'
 import { nodeBinaryName } from './node-runtime.js'
 import { httpProbe, waitForReady } from './readiness.js'
@@ -2085,6 +2085,25 @@ if (!app.requestSingleInstanceLock()) {
       })
       /** @param {string | null} origin */
       const setShellKernelOrigin = (origin) => { shellProtoState.kernelOrigin = origin }
+
+      // Hand the kernel's command name back. Up to 0.2.18 the shell published
+      // its own launcher as `dsh` — the same name the kernel CLI owns — so on
+      // any machine where `~/.local/bin` precedes the Node bin directory the
+      // link shadowed the kernel for every lookup (this project's own
+      // tools/install-plugins.sh then ran the shell launcher believing it was
+      // the kernel and reported a missing pnpm). The name is now `dsh-desktop`;
+      // a link left by the old release is reclaimed here and republished under
+      // the new name, so the terminal entry point survives the rename. Only a
+      // link whose fingerprint still matches the receipt is touched.
+      try {
+        const reclaimed = await reclaimLegacyCommands()
+        if (reclaimed.length > 0) {
+          console.log(`command migrated: ${reclaimed.join(', ')} -> ${COMMAND_NAME}`)
+          await installCommand({ target: process.execPath, args: [here, '--profile', 'web'] })
+        }
+      } catch (error) {
+        console.warn(`could not migrate the dsh command: ${error instanceof Error ? error.message : String(error)}`)
+      }
 
       // Show the window first, then start the kernel. The kernel takes seconds
       // to become ready, and making the user stare at nothing for that whole
