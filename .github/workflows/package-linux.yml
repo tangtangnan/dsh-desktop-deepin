@@ -8,7 +8,11 @@ name: Package Linux
 # 打 v* tag 时：
 #   1. 用 tag 名作为版本号打包（保证 deb 文件名与 tag 一致）
 #   2. 挂到 GitHub Release
-#   3. 若配置了 GITEE_TOKEN，同步创建/更新 Gitee Release 并上传同样的附件
+#
+# 注意：GitHub 不再负责同步 Gitee。deb 的主打包平台已迁到 AtomGit
+# （.gitcode/workflows/package-linux.yml），由它发布 AtomGit Release 并同步
+# Gitee Release——国内 runner 访问 gitee.com 不必再走跨境重试。本工作流只把
+# 自己的产物发到 GitHub Release，供境外用户与备份之用。
 
 on:
   push:
@@ -95,91 +99,3 @@ jobs:
           files: |
             release/*.deb
 
-  sync-gitee-release:
-    # 把 GitHub 上打好的 deb 同步一份到 Gitee Release，让国内用户也能直接下载。
-    # 需要仓库 Secrets 里配置 GITEE_TOKEN（Gitee 私人令牌，勾 projects 权限）；
-    # 未配置则跳过，不影响 GitHub 侧发布。
-    needs: package
-    runs-on: ubuntu-latest
-    # 注意：job 级 if 里不能用 secrets 上下文（Actions 限制），
-    # 所以这里只判断 tag，令牌是否配置放到步骤内部检查。
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download built debs
-        uses: actions/download-artifact@v4
-        with:
-          pattern: linux-artifacts-*
-          merge-multiple: true
-          path: release
-
-      - name: Create or update Gitee release and upload assets
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # 未配置 GITEE_TOKEN 就优雅跳过，不影响 GitHub 侧发布。
-          if [ -z "${GITEE_TOKEN:-}" ]; then
-            echo "未配置 GITEE_TOKEN，跳过 Gitee 同步（GitHub Release 不受影响）"
-            exit 0
-          fi
-          OWNER="westanke"
-          REPO="dsh-desktop-deepin"
-          API="https://gitee.com/api/v5/repos/${OWNER}/${REPO}"
-
-          # GitHub 的 runner 在境外，访问 gitee.com 偶发 SSL 握手失败（curl exit 35）
-          # 或整体超时（curl exit 28）。后者不能只靠「重试三次」解决：三次各 120
-          # 秒仍会全灭，而 Gitee 从境外可达性差的时段可以更久。
-          #
-          # 因此把等待放宽到 300 秒并重试五次——这一步是「尽力而为」的同步，慢
-          # 一点没关系，失败才是问题（失败已在下方降级为告警）。连接超时保持 20
-          # 秒：连不上要尽早知道，而不是把整段时间耗在等待上。
-          CURL="curl -s --retry 5 --retry-delay 10 --retry-all-errors \
-                --connect-timeout 20 --max-time 300"
-
-          echo "== 查找 Gitee release (tag=$TAG) =="
-          release_id=$($CURL "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" \
-            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log(j.id||'')}catch(e){console.log('')}})")
-
-          if [ -z "$release_id" ]; then
-            echo "  未找到，创建新 release"
-            resp=$($CURL -X POST "${API}/releases?access_token=${GITEE_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "$(printf '{"tag_name":"%s","name":"%s","body":"%s","target_commitish":"main"}' \
-                    "$TAG" "$TAG" "Linux deb（amd64 + arm64）。与 GitHub Release 同源，由 CI 自动同步。")")
-            release_id=$(echo "$resp" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log(j.id||'')}catch(e){console.log('')}})")
-          fi
-
-          if [ -z "$release_id" ]; then
-            # Gitee 同步是「尽力而为」：GitHub 侧已发布成功，这里失败不该让整个
-            # 工作流变红误导人，只告警退出 0，之后可手动补同步。
-            echo "::warning::Gitee release 创建/获取失败（多为境外 runner 访问 Gitee 的网络抖动），已跳过附件上传；GitHub Release 不受影响，可稍后手动补同步"
-            exit 0
-          fi
-          echo "  release id = $release_id"
-
-          echo "== 上传附件 =="
-          upload_failed=0
-          for f in release/*.deb; do
-            [ -f "$f" ] || continue
-            echo "  上传 $f"
-            if $CURL -f -X POST "${API}/releases/${release_id}/attach_files?access_token=${GITEE_TOKEN}" \
-                 -F "file=@${f}" >/dev/null; then
-              echo "    OK $(basename "$f")"
-            else
-              echo "    FAIL $(basename "$f")"
-              upload_failed=$((upload_failed + 1))
-            fi
-          done
-
-          if [ "$upload_failed" -gt 0 ]; then
-            # 一个都没传上去时只 echo 一句 FAIL 就走人，CI 照样是绿的——于是
-            # 「Gitee 没收到包」这件事完全没有信号，只能靠人想起来去看。这里升
-            # 成 warning：GitHub Release 已经发布成功，不该让整个 job 变红误导
-            # 人，但必须让人看得见。
-            echo "::warning::${upload_failed} 个 deb 未上传到 Gitee（多为境外 runner 访问 gitee.com 的网络问题）；GitHub Release 不受影响，可手动补传"
-          fi
-
-          echo "Gitee release 同步完成: https://gitee.com/${OWNER}/${REPO}/releases/tag/${TAG}"

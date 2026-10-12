@@ -84,6 +84,49 @@ version_ge() {
   [ "$aj" -ge "$bj" ]
 }
 
+# ── 内核 dsh 与桌面壳启动器的区分 ───────────────────────────────────────
+# 桌面壳会把「启动本壳」的命令发布成 ~/.local/bin/dsh（见 src/cli-command.js
+# 的 COMMAND_NAME），那是一个百来字节的 sh shim：
+#   exec '<electron>' '<壳目录>/src' '--profile' 'web' "$@"
+# 它与真内核同名，而 ~/.local/bin 通常排在 PATH 最前，于是 `command -v dsh`
+# 先命中的是壳自己。这不是「路径没配好」，而是「名字被抢了」，所以必须按
+# 内容判真伪。判据不能只看关键词：/usr/local/nodejs/bin/dsh 指向的 bin.js
+# 里同样出现 electron 字样，故取「文件很小 + 出现 electron」同时成立。
+is_desktop_shell_shim() {
+  local f="${1:-}" size
+  [ -n "$f" ] || return 1
+  [ -f "$f" ] || return 1
+  size="$(wc -c <"$f" 2>/dev/null || echo 0)"
+  [ "${size:-0}" -lt 4096 ] || return 1
+  grep -q 'electron' "$f" 2>/dev/null
+}
+
+# ── PATH 兜底：GUI 会话会漏掉 node 的 bin 目录 ──────────────────────────
+# 从桌面图标/应用菜单启动时，PATH 只有会话管理器给的那一份。本机 ~/.bashrc
+# 里有 export PATH=$PATH:$NODE_HOME/bin，但 DDE 会话里的 bash 是非交互非登录
+# 的，不会读 ~/.bashrc —— 于是 /usr/local/nodejs/bin 缺席，表现为插件补装时
+# 报「没有 pnpm，且自动安装失败」（pnpm/npm/corepack 一起找不到）。
+# 这里在任何探测之前把确实带 node 工具链的目录补回 PATH。
+# 只**追加**在末尾：不抢用户已有命令的优先级，只补上原本找不到的那些；
+# 前置会越过用户自己的同名命令，属于越权。
+ensure_node_bin_on_path() {
+  local d cfg_dirs
+  cfg_dirs="$(config_value nodeBinDir || true)"
+  for d in ${cfg_dirs:+"$cfg_dirs"} \
+           /usr/local/nodejs/bin /usr/local/bin /usr/bin \
+           /usr/local/node/bin /opt/nodejs/bin /opt/node/bin /snap/bin \
+           "${HOME}/.local/share/pnpm"; do
+    [ -n "$d" ] || continue
+    { [ -x "$d/node" ] || [ -x "$d/pnpm" ] || [ -x "$d/npm" ]; } || continue
+    case ":$PATH:" in
+      *":$d:"*) ;;
+      *) PATH="$PATH:$d" ;;
+    esac
+  done
+  export PATH
+}
+ensure_node_bin_on_path
+
 # ── 检测三个运行时 ─────────────────────────────────────────────────────
 # 输出：ELECTRON_OK / NODE_OK / DSH_OK 三个变量，以及它们的路径。
 ELECTRON=""; NODE_BIN=""; SYSTEM_DSH=""
@@ -108,20 +151,64 @@ detect() {
   elif have node; then NODE_BIN="$(command -v node)"
   else
     local c
+    # 候选顺序与 tools/bootstrap.sh 的 detect() 保持一致：系统级 → 版本管理器
+    # （nvm/fnm/volta/asdf/nvs/n）→ 用户级 → 第三方包管理器 → 自举私有目录。
+    # 两处必须是同一份名单，否则 bootstrap 装好的运行时 start-shell.sh 认不出，
+    # 表现为「下载完还是说缺 node」。glob 未匹配时保持原样，[ -x ] 自然跳过。
     for c in /usr/local/bin/node /usr/bin/node /usr/local/nodejs/bin/node \
+             /usr/local/node/bin/node /snap/bin/node \
+             /opt/node/bin/node /opt/nodejs/bin/node /opt/node-*/bin/node /opt/node*/bin/node \
+             /opt/apps/*/files/bin/node /opt/*/bin/node \
+             /home/linuxbrew/.linuxbrew/bin/node \
+             "${HOME}/.nvm/versions/node/"*/bin/node \
+             "${HOME}/.fnm/node-versions/"*/installation/bin/node \
+             "${HOME}/.volta/bin/node" \
+             "${HOME}/.asdf/installs/nodejs/"*/bin/node "${HOME}/.asdf/shims/node" \
+             "${HOME}/.nvs/"*/bin/node \
+             /usr/local/n/versions/node/*/bin/node \
+             "${HOME}/.local/share/pnpm/node" "${HOME}/.yarn/bin/node" \
+             "${HOME}/.local/bin/node" \
              "$RUNTIME_DIR"/node-*/bin/node; do
       [ -x "$c" ] && { NODE_BIN="$c"; break; }
     done
   fi
 
-  if [ -n "$cfg_d" ] && { [ -x "$cfg_d" ] || [ -f "$cfg_d" ]; }; then SYSTEM_DSH="$cfg_d"
-  elif have dsh; then SYSTEM_DSH="$(command -v dsh)"
+  # 配置里的路径也要验真：历史版本曾把桌面壳 shim 回填进来（「使用内核」与
+  # 实际内核不一致，真机报错日志里就是它）。验不过就当没配，继续自动探测，
+  # 后面回填 config 时会顺手把它纠正。
+  if [ -n "$cfg_d" ] && { [ -x "$cfg_d" ] || [ -f "$cfg_d" ]; } \
+     && ! is_desktop_shell_shim "$cfg_d"; then SYSTEM_DSH="$cfg_d"
+  elif have dsh && ! is_desktop_shell_shim "$(command -v dsh)"; then SYSTEM_DSH="$(command -v dsh)"
   else
-    local c
-    for c in /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
-             /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js; do
-      [ -e "$c" ] && { SYSTEM_DSH="$c"; break; }
+    local c nd
+    # dsh 优先在「Node 所在的 bin 目录」里找：npm install -g 一定装到那里，
+    # 这也是 nvm 用户最常见的情况（真机实测 dsh 就在 ~/.nvm/versions/node/*/bin/dsh）。
+    nd=""
+    [ -n "$NODE_BIN" ] && nd="$(dirname "$NODE_BIN")"
+    for c in ${nd:+"$nd/dsh"} \
+             /usr/local/bin/dsh /usr/bin/dsh /usr/local/nodejs/bin/dsh \
+             /opt/nodejs/bin/dsh /opt/node/bin/dsh /opt/*/bin/dsh \
+             /snap/bin/dsh \
+             "${HOME}/.local/bin/dsh" "${HOME}/.yarn/bin/dsh" \
+             "${HOME}/.local/share/pnpm/dsh" \
+             "${HOME}/.nvm/versions/node/"*/bin/dsh \
+             "${HOME}/.volta/bin/dsh" \
+             "${HOME}/.asdf/shims/dsh"; do
+      if [ -e "$c" ] && ! is_desktop_shell_shim "$c"; then SYSTEM_DSH="$c"; break; fi
     done
+    # 已装 dsh 但不在 PATH：再用常见全局 node_modules 目录探一次，覆盖
+    # pnpm/yarn/版本管理器把包装到别处的情况。
+    if [ -z "$SYSTEM_DSH" ] && [ -n "$NODE_BIN" ]; then
+      local nd2="${NODE_BIN%/bin}"
+      for c in "${nd2}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js" \
+               /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               "${HOME}/.nvm/versions/node/"*/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               "${HOME}/.local/share/pnpm/global/"*/node_modules/@deepseek-ai/dsh/lib/bin.js \
+               "${HOME}/.volta/tools/image/packages/@deepseek-ai/dsh/lib/bin.js"; do
+        [ -f "$c" ] && { SYSTEM_DSH="$c"; break; }
+      done
+    fi
   fi
 }
 
@@ -220,6 +307,11 @@ fi
 # DSH_BOOTSTRAP_IN_TTY 防死循环标记），让下载过程与报错都看得见。
 # 快路径：同一壳版本下已确认齐备过 → 跳过查询，避免每次启动都拉一次 pnpm。
 PLUGINS_SH="$SHELL_DIR/tools/install-plugins.sh"
+# 把本脚本刚探测到的内核路径显式交给插件脚本，让它以这里为准。
+# 它自己的 `command -v dsh` 会命中桌面壳 shim（~/.local/bin/dsh 排在 PATH
+# 最前；真机报错日志里「使用内核: /home/wangke/.local/bin/dsh」与本脚本
+# 打印的 `dsh : /usr/local/nodejs/bin/dsh` 不一致，就是这条分歧）。
+export DSH_KERNEL_BIN="${SYSTEM_DSH:-}"
 PLUGIN_STAMP="${HOME}/.dsh-desktop/.plugins-ok"
 SHELL_VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
              "$SHELL_DIR/package.json" 2>/dev/null | head -1)"

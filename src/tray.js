@@ -74,10 +74,10 @@ const SUMMON_ACCELERATOR = 'CommandOrControl+Shift+Space'
  * @type {Readonly<Record<'ours' | 'foreign' | 'stale' | 'absent', string>>}
  */
 const CLI_COMMAND_LABELS = Object.freeze({
-  ours: 'dsh 命令：已安装（点击卸载）',
-  foreign: 'dsh 命令：被其它程序占用',
-  stale: 'dsh 命令：已被改动，请手动检查',
-  absent: 'dsh 命令：未安装',
+  ours: 'dsh-desktop 命令：已安装（点击卸载）',
+  foreign: 'dsh-desktop 命令：被其它程序占用',
+  stale: 'dsh-desktop 命令：已被改动，请手动检查',
+  absent: 'dsh-desktop 命令：未安装',
 })
 // The recharge URL and summon shortcut can be overridden through config.json.
 // config.js is pure fs/path, so this import is safe under plain Node too.
@@ -118,8 +118,8 @@ export class ShellTray {
   /** @type {() => void} */
   #onToggleSafeMode = () => {}
   /**
-   * What is published at `~/.local/bin/dsh`: ours, someone else's, stale
-   * (installed by us and changed since), or absent.
+   * What is published at `~/.local/bin/dsh-desktop`: ours, someone else's,
+   * stale (installed by us and changed since), or absent.
    *
    * @type {'ours' | 'foreign' | 'stale' | 'absent'}
    */
@@ -537,10 +537,12 @@ export class ShellTray {
       { type: 'separator' },
       {
         // The shell is only half useful if a terminal opened beside it cannot
-        // reach it, and `dsh` has to be on `PATH` for that. The official shell
-        // publishes the command on macOS and Windows and declines to build it
-        // for Linux (`command-manager-entry.ts` throws off darwin/win32), so
-        // this is a Linux-only addition.
+        // reach it, so the shell launcher is published on `PATH` — under
+        // `dsh-desktop`, deliberately not `dsh`, which is the kernel CLI's own
+        // name and must not be shadowed. The official shell publishes a command
+        // on macOS and Windows and declines to build it for Linux
+        // (`command-manager-entry.ts` throws off darwin/win32), so this is a
+        // Linux-only addition.
         label: CLI_COMMAND_LABELS[this.#commandState],
         enabled: this.#commandState === 'ours' || this.#commandState === 'absent',
         click: () => this.#onToggleCommand(),

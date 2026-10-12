@@ -65,12 +65,45 @@ const SHELL_SESSION_KEYS = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', ...Object.key
  */
 const LAUNCHER_OWNED_PREFIXES = ['DSH_', 'ELECTRON_']
 
+/**
+ * Probe modes tried for each candidate shell.
+ *
+ * `-ilc` is a login *and* interactive shell, so it reads the login startup
+ * files (`~/.profile`, `/etc/profile`, `~/.zprofile`). `-ic` is interactive
+ * only, so it reads `~/.bashrc` — which is where version managers such as
+ * nvm, fnm and asdf install themselves. Those two sets do not overlap: a
+ * login shell deliberately does not read `~/.bashrc`, and the
+ * Debian/Deepin `~/.bashrc` even starts with a `case $- in *i*)` guard that
+ * returns early when non-interactive.
+ *
+ * Reading only `-ilc` therefore misses every `~/.bashrc`-installed tool, and
+ * the kernel then starts with a PATH that lacks the Node the user actually
+ * uses — the "环境没准备好" report with no Node anywhere on the search path.
+ * Both modes are read and merged; the interactive one wins, because it is the
+ * closer match to what the user's own terminal has.
+ *
+ * @type {ReadonlyArray<{ label: string, flags: string[] }>}
+ */
+const PROBE_MODES = Object.freeze([
+  { label: 'login', flags: ['-ilc'] },
+  { label: 'interactive', flags: ['-ic'] },
+])
+
 /** Why a candidate shell produced no environment. */
 export const FAILURE = Object.freeze({
   timeout: 'timeout',
   aborted: 'aborted',
   unparsed: 'unparsed',
 })
+
+/**
+ * Failure reasons that must stop the whole read rather than move to the next
+ * candidate: an abort is the caller's decision, and a timeout already burned
+ * the budget this shell was given.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const ABORT_AND_TIMEOUT = new Set([FAILURE.aborted, FAILURE.timeout])
 
 /**
  * @typedef {object} LoginShellFailure
@@ -170,12 +203,13 @@ export function mergeLoginShellEnvironment(base, shell) {
  * Runs one candidate and resolves with its environment or a failure reason.
  *
  * @param {string} shell - candidate path
+ * @param {string[]} flags - probe flags, from {@link PROBE_MODES}
  * @param {NodeJS.ProcessEnv} base - environment to probe under
  * @param {number} timeoutMs - deadline for this candidate
  * @param {AbortSignal} [signal] - aborting kills the process group
  * @returns {Promise<Record<string, string> | string>} the variables, or the reason
  */
-function readShell(shell, base, timeoutMs, signal) {
+function readShell(shell, flags, base, timeoutMs, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted === true) {
       resolve(FAILURE.aborted)
@@ -184,11 +218,11 @@ function readShell(shell, base, timeoutMs, signal) {
     /** @type {import('node:child_process').ChildProcessByStdio<null, import('node:stream').Readable, null>} */
     let child
     try {
-      // `-i` runs the interactive startup files and `-l` the login ones;
-      // without either, `~/.bashrc` / `~/.zprofile` never execute and there is
-      // nothing to read. stdin is closed so a prompt in an rc file sees EOF
-      // instead of waiting for input that will never come.
-      child = spawn(shell, ['-ilc', DUMP], {
+      // The flags decide which startup files run: `-l` reads the login ones
+      // and `-i` the interactive ones, and neither implies the other. stdin is
+      // closed so a prompt in an rc file sees EOF instead of waiting for input
+      // that will never come.
+      child = spawn(shell, [...flags, DUMP], {
         cwd: homedir(),
         env: { ...base, ...PROBE_ENVIRONMENT },
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -260,7 +294,12 @@ function readShell(shell, base, timeoutMs, signal) {
 }
 
 /**
- * Reads the user's login-shell environment once per launch.
+ * Reads the user's shell environment once per launch.
+ *
+ * Each candidate is probed in both {@link PROBE_MODES} and the results merged,
+ * so a tool installed by `~/.bashrc` (nvm, fnm, asdf, pyenv) is found even
+ * though a login shell does not read that file. The interactive mode is
+ * applied last and therefore wins on a key both modes set.
  *
  * Windows GUI launches already inherit the registry environment, so there is
  * nothing to read and `base` is returned unchanged. Never rejects: a failing
@@ -281,12 +320,24 @@ export async function readLoginShellEnvironment(base, timeoutMs, options = {}) {
   /** @type {LoginShellFailure[]} */
   const failures = []
   for (const shell of shells) {
-    const result = await readShell(shell, base, timeoutMs, signal)
-    if (typeof result !== 'string') {
-      return { environment: mergeLoginShellEnvironment(base, result), failures }
+    /** @type {Record<string, string>} */
+    let merged = {}
+    let succeeded = false
+    for (const mode of PROBE_MODES) {
+      const result = await readShell(shell, mode.flags, base, timeoutMs, signal)
+      if (typeof result !== 'string') {
+        succeeded = true
+        merged = { ...merged, ...result }
+        continue
+      }
+      failures.push({ shell, reason: result })
+      // An abort is the caller's decision and a timeout already spent this
+      // shell's budget; neither is improved by trying another mode or shell.
+      if (ABORT_AND_TIMEOUT.has(result)) return { environment: base, failures }
     }
-    failures.push({ shell, reason: result })
-    if (result === FAILURE.aborted) break
+    if (succeeded) {
+      return { environment: mergeLoginShellEnvironment(base, merged), failures }
+    }
   }
   return { environment: base, failures }
 }

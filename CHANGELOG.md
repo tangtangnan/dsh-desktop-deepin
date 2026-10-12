@@ -6,6 +6,115 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.19] — 2026-10-12
+
+### 变更
+
+- **壳的终端入口不再占用内核的名字：`dsh` → `dsh-desktop`**。托盘里那个
+  「在终端里可用 `dsh` 命令」的开关，发布的是**壳启动器**（Electron + 壳目录
+  `--profile web`，靠单实例锁激活已开着的窗口），却用了内核 CLI 的名字 `dsh`。
+  在 `~/.local/bin` 排于 Node bin 目录之前的机器上，这条链接会遮住内核：任何
+  `command -v dsh` 拿到的都是壳——本项目自己的 `tools/install-plugins.sh` 就是
+  这么把壳 shim 当成内核、进而报「没有 pnpm」。0.2.18 从另一侧加了内核真伪判据，
+  这一版从源头把名字还回去。
+  发布名现在由 `src/cli-command.js` 的 `COMMAND_NAME` 决定；旧名收在
+  `LEGACY_COMMAND_NAMES` 里，只用于回收，不再发布。
+
+### 修复
+
+- **已装机器上的旧 `dsh` 链接自动回收**。新增 `reclaimLegacyCommands()`：启动时
+  检查记账（receipt），只在链接指纹仍与记账一致时删除旧名字的链接，随后按新名字
+  `dsh-desktop` 重新发布，终端入口不中断；用户自己重指向或替换过的链接一律不碰，
+  记账也会在不再描述我们的链接时清掉，免得后续状态显示成 `stale`。托盘文案同步
+  改为「`dsh-desktop` 命令：…」。新增 4 条单测覆盖：正常回收、用户改过不动、
+  当前名字不受影响、链接已消失时清理记账。
+
+## [0.2.18] — 2026-10-12
+
+### 修复
+
+- **GUI 会话启动时报「没有 pnpm，且自动安装失败」，推荐插件一个都装不上**。
+  根因是**两条**叠在一起，此前只看到了其中一条：
+  1. 壳的「在终端里可用 `dsh` 命令」托盘功能会把启动命令发布成 `~/.local/bin/dsh`，
+     那是一个 136 字节的 sh shim（`exec <electron> <壳目录>/src --profile web`）。
+     它与内核 `dsh` 同名，而 `~/.local/bin` 通常排在 `PATH` 最前，于是
+     `command -v dsh` 命中的是壳自己。**这与 PATH 是否完整无关**——实测在 PATH
+     完整的登录 shell 里同样被抢占。拿壳 shim 当内核，`install-plugins.sh` 的
+     `plugin list` 等于让壳再拉起一个壳；日志里那句
+     「使用内核: /home/wangke/.local/bin/dsh」就是它。
+  2. DDE 等 GUI 会话里的 bash 是非交互非登录的，不读 `~/.bashrc`，因此
+     `/usr/local/nodejs/bin` 缺席，`pnpm` / `npm` / `corepack` 全部不可见，
+     `ensure_pnpm()` 的四层兜底（PATH → dsh 同目录 → corepack → npm）一起塌。
+
+  修复分三处，原则是「以 `start-shell.sh` 探测到的内核为准」：
+  - `start-shell.sh` 新增 `is_desktop_shell_shim()`。判据取「文件 < 4096 字节
+    **且** 含 electron」同时成立：只按关键词筛会误伤真内核——
+    `/usr/local/nodejs/bin/dsh` 指向的 `bin.js`（11 KB）里同样出现 electron 字样。
+    `detect()` 三处加判据，连配置文件里存的路径也验真，验不过就回退重探、并由
+    回填逻辑纠正。
+  - `start-shell.sh` 新增 `ensure_node_bin_on_path()`，在**任何探测之前**把确实带
+    node 工具链的目录补回 `PATH`。只**追加**在末尾，不抢用户已有命令的优先级。
+  - 插件块前显式 `export DSH_KERNEL_BIN="${SYSTEM_DSH:-}"`；`install-plugins.sh`
+    优先采用它，其次才轮到 `PATH` 里的 dsh（同样必须通过判真），并自带 PATH 自救
+    （故意不补 `~/.local/bin`——那里躺着壳 shim）。
+
+- **新增 4 条防回归断言并接入 `npm run check:runtime-paths`**：两个脚本都必须具备
+  内核真伪判据、PATH 兜底必须早于第一次 `detect`、内核路径必须经 `DSH_KERNEL_BIN`
+  传递、`install-plugins.sh` 必须通过语法检查。真机验证：沙箱三用例（配置被污染成
+  壳 shim / 配置全空 + GUI 式 PATH / 对照）全部回退到真内核；`install-plugins.sh`
+  在三种 PATH 场景下都打印「使用内核: /usr/local/nodejs/bin/dsh」。
+
+### 变更
+
+- **默认插件清单：`dsh-pocket-relay` → `dsh-remote-bridge`**。两者都做远程访问，
+  但 `dsh-remote-bridge` 是本项目自研并持续维护的那一个。已装 `dsh-pocket-relay`
+  的机器不会因此被卸载——查重只认「在不在」，清单只负责补装缺失项。
+
+## [0.2.17] — 2026-10-12
+
+### 修复
+
+- **start-shell.sh 也认不到 NVM 的 Node（[#1](https://github.com/westanke/dsh-desktop-deepin/issues/1) 的第二处缺口）**。
+  上一版（0.2.16）修了 Electron 内探针只读 login shell 的问题，但启动入口 `.desktop` 实际是
+  `Exec=bash /opt/deepseek-harness-desktop/start-shell.sh`，而这个 shell 脚本自己另有一套
+  Node 候选扫描——候选列表只有 `/usr/local/bin/node`、`/usr/bin/node`、
+  `/usr/local/nodejs/bin/node` 和私有 runtime，**同样没有 NVM 路径**。结果是 Electron
+  还没启动，start-shell.sh 在「三个运行时是否齐备」那一步就把 NVM 的 Node 判成缺失，转而
+  走 bootstrap 自举下载。
+  现已把候选名单与 `tools/bootstrap.sh` 的 `detect()` 对齐，两者同一份：
+  nvm / fnm / volta / asdf（含 shims）/ nvs / n，以及 linuxbrew、pnpm、yarn、snap、
+  `/opt/node*` 等位置；dsh 内核也新增「先在 Node 所在 bin 目录找」与全局 node_modules
+  兜底两类候选，覆盖通过版本管理器 `npm install -g` 的安装。
+- **新增一致性校验 `npm run check:runtime-paths`**，并接入 `prepack:app` 门禁。它断言
+  start-shell.sh 与 bootstrap.sh 都包含全部版本管理器模式，任一处遗漏直接让打包失败——
+  这次的两处漂移就是因为没有这个守卫才漏到了用户手里。
+
+### 与 0.2.16 的关系
+
+0.2.16 修的是 Electron 主进程里 `login-shell-environment.js` 的双模式 shell 探针
+（决定内核进程拿到的 PATH）；0.2.17 修的是它**之前**那一步——start-shell.sh 决定能否
+启动 Electron、是否触发首启下载。两处是同一条启动链上的两道独立的「Node 在不在」检查，
+缺一不可。
+
+## [0.2.16] — 2026-10-12
+
+### 修复
+
+- **NVM 装的 Node 找不到了，启动报「环境没准备好」**（[#1](https://github.com/westanke/dsh-desktop-deepin/issues/1)）。
+  Deepin 25 上用 NVM 装过 Node 再安装本壳，启动一直卡在「环境没准备好」，PATH 与常规目录里
+  都扫不到 Node。根因是启动前读用户 shell 环境的探针只跑 `-ilc`：`-l` 让 bash 成为 login
+  shell，读的是 `~/.profile` / `/etc/profile`，**不读 `~/.bashrc`**；而 NVM 安装器只把
+  `export PATH="$NVM_DIR/versions/node/vXX/bin:$PATH"` 写进 `~/.bashrc`，于是那唯一一个 Node
+  对探针隐身。Deepin 的 `~/.bashrc` 开头还有 `case $- in *i*)` 交互保护，非交互直接 return，
+  进一步坐实了这一点。
+  现对每个候选 shell 跑两种模式——`-ilc` 读 login 启动文件、`-ic` 读 `~/.bashrc`——结果合并，
+  交互模式后应用故在两者都设的键上胜出。一并修掉：收到 abort/timeout 时原先只中断内层、还会
+  继续试后续 shell 白记失败，现直接返回。
+  实测（合成 HOME 复现 NVM 布局）：`-ilc` 下 `~/.bashrc` 不执行、PATH 无 NVM 目录；`-ic` 下
+  两者皆达成。对无 NVM 的机器无行为变化——两个文件读到的变量一致时合并结果相同。代价是每个
+  shell 多跑一次探针，最坏多一次超时（可用 `DSH_DESKTOP_LOGIN_SHELL_TIMEOUT_MS` 调）。
+  新增 2 个回归测试，用真实 bash 加合成 HOME 驱动而非 mock：改回单模式立即失败。
+
 ## [0.2.15] — 2026-10-07
 
 ### 新增

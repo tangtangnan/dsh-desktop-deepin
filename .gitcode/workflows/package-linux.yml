@@ -1,0 +1,241 @@
+name: Package Linux AtomGit
+
+# AtomGit 作为主打包平台：runner 在国内，访问 Gitee 快且稳，
+# 产物直接发布到 AtomGit Release，不再依赖 GitHub Actions 跨境同步。
+#
+# 与 GitHub 侧 .github/workflows/package-linux.yml 保持同一套打包口径：
+#   - dpkg-deb 手工打包（不走 electron-builder，包里不含运行时）
+#   - npm install --ignore-scripts（跳过 Electron 二进制，本项目打包不需要它）
+#   - 单元测试门禁 + 包内权限断言（EACCES 复现防护）
+#   - amd64 与 arm64 各打一个 deb；打 v* tag 时汇总发布 Release
+#
+# AtomGit 平台语法约束（实测由校验器报出，与 GitHub 不同）：
+#   - name 只允许字母、数字、空格和 - _ , ; : . / ( )
+#   - runs-on 用数组形式 [os, arch, flavor]；单字符串只接受 default 等 5 个值
+#   - permissions 域是 project/pr/issue/note/repository，不是 GitHub 的 contents
+#   - 托管 runner 预装 Node 18/20，项目 engines 要求 >=22.15.0，需显式装 Node 22
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  package-amd64:
+    name: Build deb amd64
+    # 三段式标签：os, arch, flavor。显式写全，避免 default 歧义。
+    runs-on: [ubuntu-latest, x64, small]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check runner environment
+        run: |
+          echo "==== runner environment ===="
+          . /etc/os-release && echo "OS: $PRETTY_NAME"
+          echo "Arch: $(uname -m)"
+          echo ""
+          echo "==== packaging deps ===="
+          command -v dpkg-deb >/dev/null 2>&1 \
+            && echo "dpkg-deb: $(dpkg-deb --version | head -1)" \
+            || { echo "FAIL missing dpkg-deb"; exit 1; }
+          echo "preinstalled node: $(node -v 2>/dev/null || echo none)"
+          echo "preinstalled npm:  $(npm -v 2>/dev/null || echo none)"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Assert Node version gate
+        run: |
+          set -euo pipefail
+          echo "node: $(node -v)  npm: $(npm -v)"
+          NODE_MAJOR="$(node -v | sed 's/^v//' | cut -d. -f1)"
+          if [ "$NODE_MAJOR" -lt 22 ]; then
+            echo "FAIL Node major $NODE_MAJOR is below 22, engines requires >=22.15.0"
+            exit 1
+          fi
+          echo "OK Node version satisfies engines"
+
+      - name: Install dependencies
+        # 与项目 ci.yml 同口径：--ignore-scripts 跳过 electron 的二进制下载
+        #（打包 deb 不需要 Electron，它只在运行时按需下载）。
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Unit tests gate
+        run: npm test
+
+      - name: Resolve version
+        # 打 tag 时用 tag 名（去掉 v 前缀），手动触发回退到 package.json。
+        # 用文件传递而非 runner 输出变量，避免依赖平台差异。
+        run: |
+          ref="${ATOMGIT_REF_NAME:-${ATOMGIT_REF:-${GITHUB_REF_NAME:-}}}"
+          case "$ref" in
+            v*) ver="${ref#v}" ;;
+            *)  ver="$(node -p "require('./package.json').version")" ;;
+          esac
+          echo "$ver" > .pkg-version
+          echo "version: $ver (from ref=$ref)"
+
+      - name: Build deb
+        run: bash tools/build-deb.sh amd64 "$(cat .pkg-version)"
+
+      - name: Assert deb file permissions
+        # d81cb11 修过的坑：构建机上的限制性 mode（如 0600）若溜进包里，
+        # dpkg-deb --root-owner-group 只改属主不动 mode，装到 /opt 后普通用户
+        # 读不到壳代码。这里逐文件断言，从源头堵死。
+        run: |
+          set -euo pipefail
+          DEB=$(ls release/*.deb)
+          echo "checking permissions inside $DEB"
+          BAD=$(dpkg-deb -c "$DEB" | awk '
+            $6 !~ /^\.$|\.\/DEBIAN\// && $1 ~ /^-/ &&
+            substr($1, 8, 3) != "r--" && substr($1, 8, 3) != "r-x" {print $1, $6}')
+          if [ -n "$BAD" ]; then
+            echo "FAIL files not readable by others (would EACCES under /opt):"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "OK all files readable by others"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts-amd64
+          path: release/*.deb
+
+  package-arm64:
+    name: Build deb arm64
+    # 用 x64 runner 打 arm64 包。薄壳里没有任何架构相关二进制（实测包内全是
+    # JS / shell / 文本），dpkg-deb 只是把文件与 control 打成包，Architecture
+    # 字段由 build-deb.sh 的参数决定；运行时（Electron/Node）由用户在首次启动时
+    # 按 uname -m 下载，与打包机架构无关。
+    #
+    # 原先用原生 arm64 runner，实测平台侧故障：job 在「初始化步骤」即失败，
+    # 报 Failed to download and load the plugin（预置插件在 arm64 上加载不起来）。
+    # 改用 x64 既绕开该故障，也少等一类机器的排队。
+    runs-on: [ubuntu-latest, x64, small]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check runner environment
+        run: |
+          echo "==== runner environment ===="
+          . /etc/os-release && echo "OS: $PRETTY_NAME"
+          echo "Arch: $(uname -m)"
+          echo ""
+          echo "==== packaging deps ===="
+          command -v dpkg-deb >/dev/null 2>&1 \
+            && echo "dpkg-deb: $(dpkg-deb --version | head -1)" \
+            || { echo "FAIL missing dpkg-deb"; exit 1; }
+          echo "preinstalled node: $(node -v 2>/dev/null || echo none)"
+          echo "preinstalled npm:  $(npm -v 2>/dev/null || echo none)"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Assert Node version gate
+        run: |
+          set -euo pipefail
+          echo "node: $(node -v)  npm: $(npm -v)"
+          NODE_MAJOR="$(node -v | sed 's/^v//' | cut -d. -f1)"
+          if [ "$NODE_MAJOR" -lt 22 ]; then
+            echo "FAIL Node major $NODE_MAJOR is below 22, engines requires >=22.15.0"
+            exit 1
+          fi
+          echo "OK Node version satisfies engines"
+
+      - name: Install dependencies
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Unit tests gate
+        run: npm test
+
+      - name: Resolve version
+        run: |
+          ref="${ATOMGIT_REF_NAME:-${ATOMGIT_REF:-${GITHUB_REF_NAME:-}}}"
+          case "$ref" in
+            v*) ver="${ref#v}" ;;
+            *)  ver="$(node -p "require('./package.json').version")" ;;
+          esac
+          echo "$ver" > .pkg-version
+          echo "version: $ver (from ref=$ref)"
+
+      - name: Build deb
+        run: bash tools/build-deb.sh arm64 "$(cat .pkg-version)"
+
+      - name: Assert deb file permissions
+        run: |
+          set -euo pipefail
+          DEB=$(ls release/*.deb)
+          echo "checking permissions inside $DEB"
+          BAD=$(dpkg-deb -c "$DEB" | awk '
+            $6 !~ /^\.$|\.\/DEBIAN\// && $1 ~ /^-/ &&
+            substr($1, 8, 3) != "r--" && substr($1, 8, 3) != "r-x" {print $1, $6}')
+          if [ -n "$BAD" ]; then
+            echo "FAIL files not readable by others (would EACCES under /opt):"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "OK all files readable by others"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts-arm64
+          path: release/*.deb
+
+  release:
+    name: Publish Release
+    # 仅在 tag 触发时发布；push main / 手动触发只出包到 Actions artifact。
+    if: ${{ startsWith(atomgit.ref, 'refs/tags/v') }}
+    needs: [package-amd64, package-arm64]
+    runs-on: [ubuntu-latest, x64, small]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download amd64 deb
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts-amd64
+          path: release
+
+      - name: Download arm64 deb
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts-arm64
+          path: release
+
+      - name: Publish release and upload debs
+        # ATOMGIT_TOKEN / ATOMGIT_API_URL / ATOMGIT_REPOSITORY / ATOMGIT_REF_NAME
+        # 由 Runner 自动注入；这里不再用 secrets 覆盖，避免定义缺失时把系统变量清空。
+        env:
+          RELEASE_DIR: release
+          RELEASE_BODY: |
+            Linux deb（amd64 + arm64）。由 AtomGit Actions 自动构建并发布。
+        run: node tools/atomgit-release.mjs
+
+      - name: Sync debs to Gitee release
+        # Gitee 同步由 AtomGit 侧发起：runner 在国内，访问 gitee.com 是普通请求，
+        # 不再需要 GitHub 那种「超时放宽到 300 秒 + 重试五次」的跨境兜底。
+        # 需在 项目设置 -> 密钥与变量 -> 仓库密钥 配置 GITEE_TOKEN（勾 projects 权限）；
+        # 未配置时脚本会打印警告并 exit 0，不影响 AtomGit Release。
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPOSITORY: westanke/dsh-desktop-deepin
+          RELEASE_DIR: release
+        run: node tools/sync-gitee-release.mjs

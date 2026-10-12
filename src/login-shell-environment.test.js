@@ -3,7 +3,10 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { describe, it } from 'node:test'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, describe, it } from 'node:test'
 
 import {
   FAILURE,
@@ -158,11 +161,18 @@ describe('readLoginShellEnvironment', () => {
       shells: ['/nonexistent/shell-a', '/nonexistent/shell-b'],
     })
     assert.equal(result.environment, base)
-    assert.equal(result.failures.length, 2)
-    assert.deepEqual(result.failures.map((failure) => failure.shell), [
-      '/nonexistent/shell-a',
-      '/nonexistent/shell-b',
-    ])
+    // One entry per candidate per probe mode: a shell that cannot be spawned
+    // fails in both, and the record must show that rather than silently halving.
+    assert.equal(result.failures.length, 4)
+    assert.deepEqual(
+      result.failures.map((failure) => failure.shell),
+      [
+        '/nonexistent/shell-a',
+        '/nonexistent/shell-a',
+        '/nonexistent/shell-b',
+        '/nonexistent/shell-b',
+      ],
+    )
     for (const failure of result.failures) {
       assert.equal(typeof failure.reason, 'string')
       assert.ok(failure.reason.length > 0, 'a failure must say why')
@@ -177,7 +187,89 @@ describe('readLoginShellEnvironment', () => {
       shells: ['/bin/sh', '/bin/bash', '/bin/zsh'],
       signal: controller.signal,
     })
+    // The abort is checked before the first probe of the first shell, so
+    // exactly one failure is recorded and no candidate after it is touched.
     assert.equal(result.failures.length, 1)
     assert.equal(result.failures[0]?.reason, FAILURE.aborted)
+  })
+})
+
+/**
+ * Regression cover for the reported failure: on Deepin 25 with Node installed
+ * through nvm, the shell reported the environment was not ready and no Node was
+ * found anywhere on the search path.
+ *
+ * nvm writes its `export PATH=...` line into `~/.bashrc`, and a login shell
+ * (`-ilc`) does not read that file — it reads `~/.profile` instead. Probing
+ * only the login mode therefore lost the one Node the user actually had. These
+ * tests drive a real `bash` against a synthetic home so the startup-file
+ * semantics are the ones the machine actually implements, not ones assumed
+ * from documentation.
+ */
+describe('nvm installed only in ~/.bashrc', () => {
+  /** @type {string} */
+  let home
+  /** @type {string} */
+  let nvmBin
+
+  try {
+    // A version-manager layout: `~/.nvm/versions/node/<version>/bin`, which is
+    // where the real nvm puts the binaries it activates.
+    home = mkdtempSync(join(tmpdir(), 'dsh-nvm-home-'))
+    nvmBin = join(home, '.nvm', 'versions', 'node', 'v24.19.0', 'bin')
+    mkdirSync(nvmBin, { recursive: true })
+    writeFileSync(join(nvmBin, 'node'), '#!/bin/sh\necho v24.19.0\n', { mode: 0o755 })
+
+    // Only the interactive rc file sets PATH, exactly as nvm's installer does.
+    // The `case $-` guard is the Debian/Deepin default, so this also proves the
+    // probe's `-i` is what makes the file run.
+    writeFileSync(
+      join(home, '.bashrc'),
+      [
+        'case $- in',
+        '  *i*) ;;',
+        '  *) return;;',
+        'esac',
+        'export NVM_DIR="$HOME/.nvm"',
+        'export PATH="$NVM_DIR/versions/node/v24.19.0/bin:$PATH"',
+        '',
+      ].join('\n'),
+    )
+  } catch {
+    // A synthetic home cannot be built; the tests below will fail loudly rather
+    // than be silently skipped.
+    home = ''
+    nvmBin = ''
+  }
+
+  /** @returns {NodeJS.ProcessEnv} */
+  const baseEnv = () => ({ PATH: '/usr/bin:/bin', HOME: home })
+
+  after(() => {
+    if (home !== '') rmSync(home, { recursive: true, force: true })
+  })
+
+  it('finds the nvm Node on PATH', async () => {
+    const { environment } = await readLoginShellEnvironment(baseEnv(), 15_000, {
+      platform: 'linux',
+      shells: ['/bin/bash'],
+    })
+    assert.ok(
+      (environment.PATH ?? '').includes(nvmBin),
+      `PATH must contain the nvm bin directory, got: ${environment.PATH}`,
+    )
+  })
+
+  it('lets the interactive rc file win over the login-only environment', async () => {
+    // Both probe modes are read. The interactive one is applied last, so a
+    // PATH that only `~/.bashrc` sets is the one that survives.
+    const { environment } = await readLoginShellEnvironment(baseEnv(), 15_000, {
+      platform: 'linux',
+      shells: ['/bin/bash'],
+    })
+    assert.ok(
+      (environment.PATH ?? '').startsWith(nvmBin),
+      `the nvm directory must lead PATH, got: ${environment.PATH}`,
+    )
   })
 })
